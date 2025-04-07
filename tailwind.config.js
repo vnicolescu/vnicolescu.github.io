@@ -17,7 +17,7 @@ export default {
       fontFamily: {
         sans: ['Inter', 'sans-serif'],        // Body text
         heading: ['Poppins', 'sans-serif'],    // Headings
-        serif: ['DM Serif Display', 'serif'], // Quotes
+        serif: ['"EB Garamond"', 'serif'], // Updated to EB Garamond
       },
       boxShadow: {
         'card': '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)', // Example card shadow

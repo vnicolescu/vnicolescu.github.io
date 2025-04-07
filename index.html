@@ -9,5 +9,42 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+
+    <!-- SVG Filter Definition for Refined Grain -->
+    <svg width="0" height="0">
+      <defs>
+        <filter id="refined-grain" x="0" y="0" width="100%" height="100%">
+          <feTurbulence
+            type="fractalNoise"
+            baseFrequency="1.2"
+            numOctaves="6"
+            stitchTiles="stitch"
+            result="baseNoise"
+            id="turbulence-element" /> <!-- ID for animation targeting -->
+
+          <!-- Make noise monochromatic -->
+          <feColorMatrix type="saturate" values="0" in="baseNoise" result="grayscaleNoise"/>
+
+          <!-- Adjust grain intensity/opacity -->
+          <feComponentTransfer in="grayscaleNoise" result="transferredNoise">
+            <feFuncA type="linear" slope="0.15" /> <!-- Adjusted slope for finer grain -->
+          </feComponentTransfer>
+
+          <!-- Blend the grain with the source graphic -->
+          <feBlend in="SourceGraphic" in2="transferredNoise" mode="multiply" />
+        </filter>
+      </defs>
+      <!-- CSS to animate the grain -->
+      <style>
+        @keyframes grainFrequencyShift {
+          0%, 100% { baseFrequency: 1.1; }
+          50% { baseFrequency: 1.3; }
+        }
+        #turbulence-element {
+          /* Animate the baseFrequency for a subtle shimmer */
+          animation: grainFrequencyShift 20s ease-in-out infinite;
+        }
+      </style>
+    </svg>
   </body>
 </html>
