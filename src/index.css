@@ -4,6 +4,28 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  @keyframes light-ripple {
+    0% {
+      box-shadow: 0 0 0 0px theme('colors.accent-1 / 60%'); /* Start visible */
+    }
+    70% {
+      /* Layered shadow: outer white, inner accent */
+      box-shadow: 0 0 0 15px theme('colors.white / 20%'), 0 0 0 5px theme('colors.accent-1 / 40%');
+      opacity: 0.8; /* Keep button slightly visible */
+    }
+    100% {
+      box-shadow: 0 0 0 25px theme('colors.white / 0%'), 0 0 0 10px theme('colors.accent-1 / 0%');
+      opacity: 0.5; /* End state opacity */
+    }
+  }
+
+  .animate-light-ripple {
+    /* Apply the new animation, maybe slightly slower and repeating a few times */
+    animation: light-ripple 1.5s cubic-bezier(0, 0.5, 0.5, 1) 2;
+  }
+}
+
 body {
   @apply bg-background text-text-base font-sans;
   /* Add any other global base styles here */
