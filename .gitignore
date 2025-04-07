@@ -30,7 +30,7 @@ yarn-error.log*
 *.sw?
 
 # Cursor editor files
-.cursorrules/
+# .cursorrules/
 .cursor/
 
 # OS generated files
