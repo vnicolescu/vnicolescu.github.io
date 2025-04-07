@@ -1,5 +1,5 @@
 import React from 'react';
-import Header from './components/Header';
+import Hero from './components/Hero';
 import Section from './components/Section';
 import TraitCard from './components/TraitCard';
 import QuoteBlock from './components/QuoteBlock';
@@ -13,7 +13,7 @@ import { profileData } from './data/profileData';
 function App() {
   return (
     <div className="min-h-screen bg-background text-gray-800 relative pb-20">
-      <Header />
+      <Hero />
       <PromptBubble promptText={profileData.prompt} />
 
       <main className="pt-5 p-4 sm:p-8 md:p-12">
