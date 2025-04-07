@@ -1,0 +1,25 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+🧠 Aesthetic Identity for Vlad’s Leadership Page
+
+🎨 Color Scheme: “Constellation”
+	•	Primary: #262626 (Dark Matter Black)
+	•	Secondary: #E5E7EB (Soft Nebula Gray)
+	•	Accent 1: #6366F1 (Indigo Flame) – for headers, interactive highlights
+	•	Accent 2: #F59E0B (Solar Amber) – for subtle emphasis or callouts
+	•	Background: #F9FAFB (Stellar Canvas)
+	•	Optional Glow UI: rgba(99,102,241,0.15) on hover/active elements
+
+✍️ Typography
+	•	Heading Font: Poppins (Bold + expressive, futuristic yet clean)
+	•	Body Font: Inter (Legible, modern, adaptable)
+	•	Quotes / Pull Texts: DM Serif Display for poetic gravity
+
+💡 Interaction Design
+	•	Animated cards and collapsible sections
+	•	Prompt bubble as a fixed visual “message from the strategist”
+	•	Smooth scroll with active nav highlight
+	•	“Growth Pattern” and “Recommendations” as toggles/accordions

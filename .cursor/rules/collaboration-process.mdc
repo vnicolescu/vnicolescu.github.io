@@ -1,0 +1,17 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Collaboration Process & Project Logging
+
+## Workflow with Creative Director (CD)
+
+1.  **Implementation Phase:** The Developer AI (Gemini) implements features based on directives from the User (Vlatko) or the CD.
+2.  **Comprehensive Summary:** After each significant implementation or feature completion, the Developer AI will provide a clear, comprehensive summary of the technical changes made. This summary is intended for Vlatko to relay to the Creative Director AI.
+3.  **CD Review & Next Steps:** The CD reviews the summary and provides the next set of creative or structural directives.
+
+## Project Log
+
+1.  **Feature Completion:** Once a feature or significant step is confirmed by Vlatko as complete, functional, and merged/committed, the Developer AI will add a concise entry to the `project_log.md` file.
+2.  **Log Purpose:** This log serves as a high-level tracker of completed milestones and project progress.

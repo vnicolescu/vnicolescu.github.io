@@ -1,0 +1,124 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# 🔧 Project Overview: Vlad's Leadership Profile Page (React + Tailwind)
+
+## 🎯 Goal
+
+Create a **modular, elegant, interactive personal leadership profile webpage** that reflects Vlad’s unique leadership style, aesthetic taste, and multidimensional identity.
+This page should feel like an expressive, poetic interface between personhood and system design—part portfolio, part self-reflective mirror, with a tech-native feel.
+
+---
+
+## 🧱 Tech Stack
+
+- **React**: Component-based structure, ease of scaling and routing
+- **Tailwind CSS**: Fast, customizable, utility-first styling
+- **Vite** (or CRA): For bundling and fast dev experience
+- **Google Fonts**: `Poppins`, `Inter`, `DM Serif Display`
+- **GitHub Pages**: Hosting via custom domain
+- **Analytics** *(optional later)*: Google Analytics or Plausible
+
+---
+
+## 🧩 Planned Structure & File Architecture
+**TBD**
+
+---
+
+## 🎨 Design System
+
+### Fonts
+
+| Use          | Font               |
+|--------------|--------------------|
+| Headings     | `Poppins`          |
+| Body Text    | `Inter`            |
+| Quotes       | `DM Serif Display` |
+
+### Color Palette: “Constellation Theme”
+
+| Role        | Color Name         | Hex Code    |
+|-------------|--------------------|-------------|
+| Primary     | Dark Matter Black  | `#262626`   |
+| Background  | Stellar Canvas     | `#F9FAFB`   |
+| Text Base   | Nebula Gray        | `#E5E7EB`   |
+| Accent 1    | Indigo Flame       | `#6366F1`   |
+| Accent 2    | Solar Amber        | `#F59E0B`   |
+| Hover Glow  | Indigo Flame (15%) | `rgba(99,102,241,0.15)` |
+
+---
+
+## 🧠 Components & Features
+
+### `Header.jsx`
+
+- Displays page title + strategist subtitle
+- Optionally fixed or floating for navigation context
+
+### `PromptBubble.jsx`
+
+- Floating bubble showing the original prompt that generated the report
+- Styled like a minimalist chat message from the “AI Career Strategist”
+
+### `Section.jsx`
+
+- Reusable layout for each section (e.g., Overview, Traits, Growth Patterns)
+
+### `TraitCard.jsx`
+
+- Modular cards: title, bullet list, and quote
+- Includes optional hover or fade-in animation
+
+### `Table.jsx`
+
+- Interactive Tailwind-styled table for “Motivations & Drives”
+- Hover highlights, stacked responsive layout on mobile
+
+### `Accordion.jsx`
+
+- Used for collapsible content like “Growth Patterns” and “Recommendations”
+- Smooth transitions for open/close state
+
+### `QuoteBlock.jsx`
+
+- Custom styled quote section with serif font and visual emphasis
+- May include subtle animation (fade-in or scroll trigger)
+
+### `Footer.jsx`
+
+- Attribution footer with optional analytics integration
+
+---
+
+## 🌀 Behavior & UX
+
+- **Responsive layout** (desktop, tablet, mobile)
+- **Smooth scroll** between anchored sections
+- **Subtle animations** (hover glow, scroll fade, card delays)
+- **Dark Mode** (optional phase two)
+- **Interactive elements** that feel intentional, minimal, and elegant
+
+---
+
+## ✅ Next Steps
+
+1. **Set up React + Tailwind project** using Vite
+2. **Add fonts** and define base theme in `tailwind.config.js`
+3. **Create reusable components** in `/components`
+4. **Migrate content** into `profileData.js` and display dynamically
+5. **Implement sections**: Overview, Traits, Table, Growth Patterns, etc.
+6. **Add animations + interaction polish**
+7. **Deploy to GitHub Pages** via custom domain
+8. Add **metadata, SEO, and analytics script** (optional)
+
+---
+
+## 🧬 Project Intent
+
+> This is not just a portfolio page.
+> It’s an **interface between identity and idea**, meant to express a multidimensional leadership philosophy in elegant, resonant form.
+> The vibe: creative strategist meets poetic technologist.
+> The goal: communicate depth, pattern mastery, and vision—all with beauty.
