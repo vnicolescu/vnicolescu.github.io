@@ -46,3 +46,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Specific directories to ignore
+vnicolescu.github.io/
