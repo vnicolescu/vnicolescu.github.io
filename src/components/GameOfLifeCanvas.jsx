@@ -5,9 +5,11 @@ const CELL_SIZE = 4;
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1;
 const PULSE_LENGTH = 3;
-const DEFAULT_PULSE_GENERATION_INTERVAL = 30; // Default: ~2 Hz at 60fps
-const DEFAULT_PULSE_ADVANCE_INTERVAL = 1; // Default: Doubled speed (was 2)
-const DEFAULT_BRANCH_CHANCE = 0.15; // Slightly increased default
+const DEFAULT_PULSE_GENERATION_INTERVAL = 12; // Changed default to 12 from screenshot
+const DEFAULT_PULSE_ADVANCE_INTERVAL = 1; // Base interval (lower = faster base step)
+const DEFAULT_PULSE_SPEED_FACTOR = 5; // Default speed factor (higher = faster effective speed)
+const MAX_PULSE_SPEED_FACTOR = 50; // Allow much faster speeds
+const DEFAULT_BRANCH_CHANCE = 0.15;
 const DEFAULT_FADE_SPEED = 0.02;
 const FLASH_DURATION_FRAMES = 15;
 
@@ -76,31 +78,32 @@ const GameOfLifeCanvas = () => {
 
   // --- State for Simulation Parameters ---
   const [pulseGenerationInterval, setPulseGenerationInterval] = useState(DEFAULT_PULSE_GENERATION_INTERVAL);
-  const [pulseAdvanceInterval, setPulseAdvanceInterval] = useState(DEFAULT_PULSE_ADVANCE_INTERVAL);
+  const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR); // NEW state for speed factor
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // *** RE-ADD: State for Directional Weights ***
-  const [directionWeights, setDirectionWeights] = useState(Array(8).fill(1));
+  // NEW Default Weights from screenshot
+  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.5, 0.5, 0, 0, 0]);
 
-  // Use refs to hold the current state values for use inside animation frame
+  // Use refs to hold the current state values
   const simParamsRef = useRef({
     pulseGenerationInterval,
-    pulseAdvanceInterval,
+    pulseSpeedFactor, // Use speed factor in ref
     branchChance,
     fadeSpeed,
-    directionWeights, // *** RE-ADD: Add weights to ref ***
+    directionWeights,
   });
 
   // Update refs whenever state changes
   useEffect(() => {
     simParamsRef.current = {
       pulseGenerationInterval,
-      pulseAdvanceInterval,
+      pulseSpeedFactor, // Update ref
       branchChance,
       fadeSpeed,
-      directionWeights, // *** RE-ADD: Update ref ***
+      directionWeights,
     };
-  }, [pulseGenerationInterval, pulseAdvanceInterval, branchChance, fadeSpeed, directionWeights]); // *** RE-ADD: Add dependency ***
+    // Update dependencies
+  }, [pulseGenerationInterval, pulseSpeedFactor, branchChance, fadeSpeed, directionWeights]);
 
   // Helper to get neighbors (Check for existing connections)
   const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId) => {
@@ -226,46 +229,54 @@ const GameOfLifeCanvas = () => {
     };
 
     // *** NEW: Advance Pulses and Trigger Growth ***
-    const advancePulses = () => {
+    const advancePulsesInternal = () => { // Renamed original logic
         const pulsesToRemove = [];
-        const growthTendrils = new Set(); // Tendrils that need to grow this step
+        const growthTendrils = new Set();
+        const currentSpeedFactor = simParamsRef.current.pulseSpeedFactor;
+        // Calculate steps to advance based on factor (simple linear scaling for now)
+        // Ensure at least 1 step
+        const stepsToAdvance = Math.max(1, Math.floor(currentSpeedFactor)); // Adjust logic as needed
 
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
             if (!tendril || tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
-                // Remove pulse if its tendril is gone or dead
                 pulsesToRemove.push(index);
                 return;
             }
 
-            pulse.position++;
+            // --- Disconnection Check (remains the same) ---
+            // ... check gridCell ...
 
-            // Check if pulse reached the end of the current path
-            if (pulse.position >= tendril.path.length -1 ) {
-                 if (tendril.state === 'growing') { // Only grow if tendril is in growing state
-                    growthTendrils.add(tendril.id); // Mark tendril for growth attempt
-                 }
-                 // Remove the pulse once it reaches the end (triggers growth or just finishes)
-                 pulsesToRemove.push(index);
-            } else if (pulse.position >= tendril.path.length) {
-                 // Safety check: remove pulse if it somehow went past the end
-                 pulsesToRemove.push(index);
+            // Advance position by calculated steps
+            pulse.position += stepsToAdvance;
+
+            // Check if pulse reached the end
+            if (pulse.position >= tendril.path.length - 1) {
+                if (tendril.state === 'growing') {
+                    growthTendrils.add(tendril.id);
+                }
+                pulsesToRemove.push(index);
+            } else if (pulse.position >= tendril.path.length) { // Still useful safety check
+                pulsesToRemove.push(index);
             }
         });
 
-        // Remove finished/orphaned pulses (iterate backwards)
+        // Remove pulses
         for (let i = pulsesToRemove.length - 1; i >= 0; i--) {
             pulsesRef.current.splice(pulsesToRemove[i], 1);
         }
 
-        // Trigger growth attempts for marked tendrils
+        // Trigger growth
         growthTendrils.forEach(tendrilId => {
             const tendril = findTendrilById(tendrilId);
             if (tendril) {
-                tryGrowTendril(tendril); // Call the (renamed/refactored) growth function
+                tryGrowTendril(tendril);
             }
         });
     };
+
+    // Replace the old advancePulses in the scope with the internal version
+    advancePulses = advancePulsesInternal;
 
     // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
@@ -530,28 +541,26 @@ const GameOfLifeCanvas = () => {
              context.globalAlpha = 1.0;
         });
 
-        // *** NEW: 3. Draw Pulses (Overlay) ***
-        context.globalAlpha = 1.0; // Pulses are full opacity
+        // *** NEW: 3. Draw Pulses (Leading Edge Orange) ***
+        context.globalAlpha = 1.0;
         pulsesRef.current.forEach(pulse => {
             const tendril = findTendrilById(pulse.tendrilId);
-            if (!tendril || tendril.opacity <= 0) return; // Skip if tendril faded
+            if (!tendril || tendril.opacity <= 0) return;
 
             for (let i = 0; i < PULSE_LENGTH; i++) {
                 const pulseSegmentPos = pulse.position - i;
                 if (pulseSegmentPos >= 0 && pulseSegmentPos < tendril.path.length) {
                     const cellCoord = tendril.path[pulseSegmentPos];
-                    // Boundary check
                     if (cellCoord.y < 0 || cellCoord.y >= gridHeight || cellCoord.x < 0 || cellCoord.x >= gridWidth) continue;
                     const gridCell = gridRef.current[cellCoord.y]?.[cellCoord.x];
 
-                    // Only draw pulse over tendril/source cells, not connections/empty
                     if (gridCell && (gridCell.type === 'source' || gridCell.tendrilId === tendril.id) && gridCell.type !== 'connection') {
                          let pulseColor;
-                         if (i === 0) pulseColor = PULSE_BRIGHT_COLOR; // Leading edge
-                         else if (i === 1) pulseColor = PULSE_MID_COLOR;
-                         else pulseColor = PULSE_DIM_COLOR; // i === 2
+                         // *** Corrected Pulse Color Logic ***
+                         if (i === 0) pulseColor = CONNECTION_COLOR; // Leading edge is Orange/Amber
+                         else if (i === 1) pulseColor = PULSE_BRIGHT_COLOR; // First trail segment is bright white
+                         else pulseColor = PULSE_MID_COLOR; // Second trail segment is dimmer white/gray
 
-                         // Apply pulse opacity based on tendril opacity?
                          context.globalAlpha = tendril.opacity;
                          context.fillStyle = pulseColor;
                          context.fillRect(cellCoord.x * CELL_SIZE, cellCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
@@ -563,30 +572,42 @@ const GameOfLifeCanvas = () => {
     };
 
 
-    // --- Animation Loop ---
-    // let animationFrameId = null; // Moved declaration up
+    // --- Animation Loop (Using Pulse Speed Factor) ---
     const render = () => {
-        if (!canvasRef.current) return; // Stop if component unmounted
+        if (!canvasRef.current) return;
         frameCountRef.current++;
 
-        // --- Simulation Steps ---
-        const { pulseGenerationInterval: currentGenInterval, pulseAdvanceInterval: currentAdvanceInterval } = simParamsRef.current;
+        const { pulseGenerationInterval: currentGenInterval, pulseSpeedFactor: currentSpeedFactor } = simParamsRef.current;
 
-        // Spawn new pulses periodically using state value
+        // Calculate the effective advance interval based on the speed factor
+        // Lower base interval means faster steps. Higher factor means more steps skipped = faster.
+        // Ensure interval is at least 1 frame.
+        const effectiveAdvanceInterval = Math.max(1, Math.round(DEFAULT_PULSE_ADVANCE_INTERVAL / (currentSpeedFactor / DEFAULT_PULSE_SPEED_FACTOR))); // Adjust calculation if needed
+        // Alternative simpler calculation: skip frames based on speed factor
+        // const skipFrames = Math.max(0, Math.floor(currentSpeedFactor - 1)); // Needs adjustment based on desired speed range
+
+        // Spawn new pulses periodically
         if (currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0) {
             spawnPulses();
         }
-        // Advance existing pulses using state value
-        if (currentAdvanceInterval > 0 && frameCountRef.current % Math.round(currentAdvanceInterval) === 0) {
-             advancePulses();
-        }
-        // Update fading and connection states every frame
+
+        // Advance existing pulses based on effective interval
+        // This logic might need refinement: Should pulse speed affect how often advancePulses is CALLED,
+        // or how many steps a pulse takes WITHIN advancePulses?
+        // Current approach: Call advancePulses less frequently for slower speeds.
+        // Let's try calling advancePulses every frame but advancing position based on speed factor inside advancePulses.
+
+        // -- RETHINK: Modify advancePulses instead --
+        // if (effectiveAdvanceInterval > 0 && frameCountRef.current % effectiveAdvanceInterval === 0) {
+        //      advancePulses(); // Pass speed factor?
+        // }
+
+        // Update simulation state every frame (or based on speed?)
+        advancePulses(); // Call every frame now
         fadeTendrils();
         updateConnections();
 
-        // --- Drawing Step ---
         drawGridAndElements();
-
         animationFrameId = window.requestAnimationFrame(render);
     };
 
@@ -641,22 +662,31 @@ const GameOfLifeCanvas = () => {
        <div className="absolute bottom-4 left-4 flex space-x-6">
            {/* Parameter Sliders */}
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
-                 {/* Sliders remain the same */}
+                 {/* Pulse Interval Slider (remains the same) */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseGen" className="flex-1">Pulse Interval:</label>
                    <input type="range" id="pulseGen" min="5" max="120" step="1" value={pulseGenerationInterval} onChange={(e) => setPulseGenerationInterval(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{pulseGenerationInterval}</span>
                  </div>
+                 {/* --- Modified Pulse Speed Slider --- */}
                  <div className="flex items-center justify-between">
-                   <label htmlFor="pulseAdv" className="flex-1">Pulse Speed:</label>
-                   <input type="range" id="pulseAdv" min="1" max="10" step="1" value={pulseAdvanceInterval} onChange={(e) => setPulseAdvanceInterval(Number(e.target.value))} className="w-20 mx-2" />
-                   <span className="w-6 text-right">{pulseAdvanceInterval}</span>
+                   <label htmlFor="pulseSpeedFactor" className="flex-1">Pulse Speed:</label>
+                   <input
+                      type="range" id="pulseSpeedFactor"
+                      min="1" max={MAX_PULSE_SPEED_FACTOR} step="1" // Use new range
+                      value={pulseSpeedFactor}
+                      onChange={(e) => setPulseSpeedFactor(Number(e.target.value))} // Update speed factor state
+                      className="w-20 mx-2"
+                   />
+                   <span className="w-6 text-right">{pulseSpeedFactor}x</span> {/* Display factor */}
                  </div>
+                 {/* Branch Chance Slider (remains the same) */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="branch" className="flex-1">Branch Chance:</label>
                    <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{(branchChance * 100).toFixed(0)}%</span>
                  </div>
+                 {/* Fade Speed Slider (remains the same) */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="fade" className="flex-1">Fade Speed:</label>
                    <input type="range" id="fade" min="0.001" max="0.1" step="0.001" value={fadeSpeed} onChange={(e) => setFadeSpeed(Number(e.target.value))} className="w-20 mx-2" />
