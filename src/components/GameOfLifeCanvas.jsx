@@ -1,15 +1,14 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 
-// Simulation Constants
+// Simulation Constants (Defaults)
 const CELL_SIZE = 4;
-const NUM_SOURCES = 2; // *** Changed to 2 sources ***
-const GROWTH_STEP = 1; // Changed from 3 to 1 per user request
+const NUM_SOURCES = 2;
+const GROWTH_STEP = 1;
 const PULSE_LENGTH = 3;
-// const PULSE_INTERVAL_FRAMES = 4; // Replaced by pulse generation interval
-const PULSE_GENERATION_INTERVAL = 30; // Changed from 50 to 30 (2Hz - faster pulses)
-const PULSE_ADVANCE_INTERVAL = 2; // How many frames between pulse moving one step
-const BRANCH_CHANCE = 0.10;
-const FADE_SPEED = 0.02;
+const DEFAULT_PULSE_GENERATION_INTERVAL = 30; // Default: ~2 Hz at 60fps
+const DEFAULT_PULSE_ADVANCE_INTERVAL = 1; // Default: Doubled speed (was 2)
+const DEFAULT_BRANCH_CHANCE = 0.15; // Slightly increased default
+const DEFAULT_FADE_SPEED = 0.02;
 const FLASH_DURATION_FRAMES = 15;
 
 // Colors (using your palette)
@@ -38,8 +37,32 @@ const GameOfLifeCanvas = () => {
   const sourcesRef = useRef([]);
   const tendrilsRef = useRef([]);
   const connectionsRef = useRef([]);
-  const pulsesRef = useRef([]); // *** New: Store active pulses ***
+  const pulsesRef = useRef([]);
   const frameCountRef = useRef(0);
+
+  // --- State for Simulation Parameters ---
+  const [pulseGenerationInterval, setPulseGenerationInterval] = useState(DEFAULT_PULSE_GENERATION_INTERVAL);
+  const [pulseAdvanceInterval, setPulseAdvanceInterval] = useState(DEFAULT_PULSE_ADVANCE_INTERVAL);
+  const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
+  const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
+
+  // Use refs to hold the current state values for use inside animation frame
+  const simParamsRef = useRef({
+    pulseGenerationInterval,
+    pulseAdvanceInterval,
+    branchChance,
+    fadeSpeed,
+  });
+
+  // Update refs whenever state changes
+  useEffect(() => {
+    simParamsRef.current = {
+      pulseGenerationInterval,
+      pulseAdvanceInterval,
+      branchChance,
+      fadeSpeed,
+    };
+  }, [pulseGenerationInterval, pulseAdvanceInterval, branchChance, fadeSpeed]);
 
   // Helper to get neighbors (Check for existing connections)
   const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId) => {
@@ -212,6 +235,7 @@ const GameOfLifeCanvas = () => {
         const newBranches = [];
         const newlyConnectedSources = new Set(); // Keep track locally for fading trigger
         let currentHead = tendril.path[tendril.path.length - 1];
+        let previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
         let hasGrown = false;
 
         for (let step = 0; step < GROWTH_STEP; step++) {
@@ -220,68 +244,93 @@ const GameOfLifeCanvas = () => {
              }
             const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
 
-            // Check for collision with other source tendrils
+            // Filter out the immediate previous cell to prevent immediate backtracking
+            const validEmptyNeighbors = neighbors.empty.filter(n =>
+                !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
+            );
+
+            // Filter out cells that are part of this tendril's path (self-collision)
+            const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
+                !tendril.path.some(p => p.x === n.x && p.y === n.y)
+            );
+
+            // Check for collision with other source tendrils first
             if (neighbors.collision.length > 0) {
-                const collision = neighbors.collision[0]; // Take the first collision
-                // Connection logic here...
+                const collision = neighbors.collision[0];
+                // TODO: Implement proper connection logic (flash, etc.)
                 tendril.state = 'collided';
+                 console.log(`Tendril ${tendril.id} collided with source ${collision.otherSourceId}`);
+                 // Mark the other tendril as collided too, if found
+                 const otherTendril = findTendrilById(collision.otherTendrilId);
+                 if (otherTendril && otherTendril.state === 'growing') {
+                     otherTendril.state = 'collided';
+                 }
+                 // Add connection
+                 const connectionId = `c-${tendril.sourceId}-${collision.otherSourceId}`;
+                 if (!connectionsRef.current.some(c => c.id === connectionId)) {
+                      connectionsRef.current.push({
+                           id: connectionId,
+                           sourceId1: tendril.sourceId,
+                           sourceId2: collision.otherSourceId,
+                           path: [currentHead, {x: collision.x, y: collision.y}], // Simple path for now
+                           state: 'flashing',
+                           flashTimer: FLASH_DURATION_FRAMES,
+                       });
+                      // Mark colliding cells as connection points
+                      gridUpdates.set(`${currentHead.y}-${currentHead.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                      gridUpdates.set(`${collision.y}-${collision.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                      newlyConnectedSources.add(tendril.sourceId);
+                      newlyConnectedSources.add(collision.otherSourceId);
+                 }
+                break; // Stop growing this step after collision
+            }
+
+             // If no valid non-self neighbors are available, the tendril is blocked
+             if (nonSelfNeighbors.length === 0) {
+                // Check if blocked by self or just boundaries/other static elements
+                 if (neighbors.empty.length > 0 && validEmptyNeighbors.length === 0) {
+                     // Blocked by immediate backtrack prevention - allow stopping
+                     tendril.state = 'blocked';
+                 } else if (neighbors.empty.length > 0 && nonSelfNeighbors.length === 0) {
+                      // Blocked specifically by its own path
+                      tendril.state = 'blocked';
+                      // console.log(`Tendril ${tendril.id} blocked by self`);
+                 } else {
+                     // Blocked by edges or other tendrils it can't connect to yet
+                     tendril.state = 'blocked';
+                     // console.log(`Tendril ${tendril.id} blocked (no empty neighbors)`);
+                 }
                 break;
             }
 
-            // Check for self-collision - don't touch your own tendril
-            if (neighbors.selfCollision.length > 0) {
-                // If all available directions would cause self-collision, stop growing
-                if (neighbors.empty.length === 0) {
-                    tendril.state = 'blocked'; // Cornered by itself, so it stops
-                    break;
-                }
+            // Choose the next cell from valid, non-self neighbors
+            const nextCell = nonSelfNeighbors[getRandomInt(nonSelfNeighbors.length)];
 
-                // Otherwise, try to grow in a direction that avoids self-collision
-                // Filter out empty neighbors that are adjacent to self-collision points
-                const safeEmptyNeighbors = neighbors.empty.filter(emptyCell => {
-                    // Check if this empty cell is adjacent to any self-collision point
-                    return !neighbors.selfCollision.some(selfCell =>
-                        Math.abs(emptyCell.x - selfCell.x) <= 1 &&
-                        Math.abs(emptyCell.y - selfCell.y) <= 1
-                    );
-                });
-
-                if (safeEmptyNeighbors.length > 0) {
-                    // Grow in a direction that avoids self-collision
-                    const nextCell = safeEmptyNeighbors[getRandomInt(safeEmptyNeighbors.length)];
-                    currentHead = nextCell;
-                    hasGrown = true;
-                    const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
-                    gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
-                    tendril.path.push(nextCell);
-                    continue;
+            // Random chance to split/branch BEFORE moving to the chosen cell
+            if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
+                // Find a different valid neighbor to branch towards
+                const branchNeighbors = nonSelfNeighbors.filter(n => n.x !== nextCell.x || n.y !== nextCell.y);
+                if (branchNeighbors.length > 0) {
+                    const branchTarget = branchNeighbors[getRandomInt(branchNeighbors.length)];
+                    const branchId = getUniqueTendrilId(tendril.sourceId);
+                    const branchTendril = {
+                        id: branchId,
+                        sourceId: tendril.sourceId,
+                        path: [...tendril.path, branchTarget], // Start branch path from current head + branch target
+                        state: 'growing',
+                        pulsePosition: 0,
+                        opacity: 1,
+                    };
+                    newBranches.push(branchTendril);
+                    // Mark the branched cell on the grid
+                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
+                     console.log(`Tendril ${tendril.id} branched to ${branchId}`);
                 }
             }
 
-            // If no empty cells are available, tendril is blocked
-            if (neighbors.empty.length === 0) {
-                tendril.state = 'blocked';
-                break;
-            }
-
-            // Random chance to split/branch (only for growing tendrils with sufficient length)
-            if (tendril.state === 'growing' && tendril.path.length > 5 && Math.random() < BRANCH_CHANCE) {
-                // Create a new branch tendril starting from current head
-                const branchId = getUniqueTendrilId(tendril.sourceId);
-                const branchTendril = {
-                    id: branchId,
-                    sourceId: tendril.sourceId,
-                    path: [...tendril.path], // Copy the path up to this point
-                    state: 'growing',
-                    pulsePosition: 0,
-                    opacity: 1,
-                };
-                newBranches.push(branchTendril);
-            }
-
-            // Choose a direction for growth
-            const nextCell = neighbors.empty[getRandomInt(neighbors.empty.length)];
+            // Move to the chosen next cell
             currentHead = nextCell;
+            previousCell = tendril.path[tendril.path.length - 1]; // Update previous cell
             hasGrown = true;
             const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
             gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
@@ -292,14 +341,17 @@ const GameOfLifeCanvas = () => {
          gridUpdates.forEach((update, key) => {
             const [y, x] = key.split('-').map(Number);
             if (gridRef.current[y]?.[x]) {
-                 gridRef.current[y][x] = { ...gridRef.current[y][x], ...update };
+                 // Don't overwrite existing connections with tendril updates from growth
+                 if (gridRef.current[y][x].type !== 'connection') {
+                    gridRef.current[y][x] = { ...gridRef.current[y][x], ...update };
+                 }
             }
         });
 
         // Add any new branches created during growth
         tendrilsRef.current.push(...newBranches);
 
-        // Trigger fading if connection happened during this growth attempt
+        // Trigger fading for connected sources
          if (newlyConnectedSources.size > 0) {
              tendrilsRef.current.forEach(t => {
                  if (newlyConnectedSources.has(t.sourceId) && t.state === 'growing') {
@@ -313,10 +365,11 @@ const GameOfLifeCanvas = () => {
     const fadeTendrils = () => {
         const tendrilsToRemove = [];
         const gridUpdates = new Map();
+        const currentFadeSpeed = simParamsRef.current.fadeSpeed; // Use state value
 
         tendrilsRef.current.forEach((tendril, index) => {
              if (tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
-                tendril.opacity -= FADE_SPEED;
+                tendril.opacity -= currentFadeSpeed;
 
                 if (tendril.opacity <= 0) {
                     tendrilsToRemove.push(index);
@@ -476,12 +529,14 @@ const GameOfLifeCanvas = () => {
         frameCountRef.current++;
 
         // --- Simulation Steps ---
-        // Spawn new pulses periodically
-        if (frameCountRef.current % PULSE_GENERATION_INTERVAL === 0) {
+        const { pulseGenerationInterval: currentGenInterval, pulseAdvanceInterval: currentAdvanceInterval } = simParamsRef.current;
+
+        // Spawn new pulses periodically using state value
+        if (currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0) {
             spawnPulses();
         }
-        // Advance existing pulses (and trigger growth indirectly)
-        if (frameCountRef.current % PULSE_ADVANCE_INTERVAL === 0) {
+        // Advance existing pulses using state value
+        if (currentAdvanceInterval > 0 && frameCountRef.current % Math.round(currentAdvanceInterval) === 0) {
              advancePulses();
         }
         // Update fading and connection states every frame
@@ -526,7 +581,7 @@ const GameOfLifeCanvas = () => {
 
 
   return (
-    <div className="w-full h-screen bg-black flex items-center justify-center p-5"> {/* Changed bg-gray-900 to bg-black */}
+    <div className="relative w-full h-screen bg-black flex flex-col items-center justify-center p-5">
       <canvas
         ref={canvasRef}
         id="gameOfLifeCanvas"
@@ -535,6 +590,48 @@ const GameOfLifeCanvas = () => {
       >
         Your browser does not support the canvas element.
       </canvas>
+      <div className="absolute bottom-4 left-4 bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2">
+        <div className="flex items-center space-x-2">
+          <label htmlFor="pulseGen">Pulse Interval:</label>
+          <input
+            type="range" id="pulseGen" min="5" max="120" step="1"
+            value={pulseGenerationInterval}
+            onChange={(e) => setPulseGenerationInterval(Number(e.target.value))}
+            className="w-24"
+          />
+          <span>{pulseGenerationInterval}</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <label htmlFor="pulseAdv">Pulse Speed:</label>
+          <input
+             type="range" id="pulseAdv" min="1" max="10" step="1"
+             value={pulseAdvanceInterval}
+             onChange={(e) => setPulseAdvanceInterval(Number(e.target.value))}
+             className="w-24"
+          />
+          <span>{pulseAdvanceInterval}</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <label htmlFor="branch">Branch Chance:</label>
+          <input
+             type="range" id="branch" min="0" max="0.5" step="0.01"
+             value={branchChance}
+             onChange={(e) => setBranchChance(Number(e.target.value))}
+             className="w-24"
+          />
+          <span>{(branchChance * 100).toFixed(0)}%</span>
+        </div>
+         <div className="flex items-center space-x-2">
+           <label htmlFor="fade">Fade Speed:</label>
+           <input
+             type="range" id="fade" min="0.001" max="0.1" step="0.001"
+             value={fadeSpeed}
+             onChange={(e) => setFadeSpeed(Number(e.target.value))}
+             className="w-24"
+           />
+           <span>{fadeSpeed.toFixed(3)}</span>
+         </div>
+      </div>
     </div>
   );
 };
