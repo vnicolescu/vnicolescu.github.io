@@ -41,21 +41,41 @@ const getDirectionIndex = (dx, dy) => {
     return dir ? dir.index : -1;
 }
 
-const weightedRandomSelect = (options) => { // options: [{ item: neighbor, weight: number }]
+// Fixed and enhanced weightedRandomSelect
+const weightedRandomSelect = (options) => {
+    if (!options || options.length === 0) {
+        return null;
+    }
+
+    // Filter options with positive weights
     const validOptions = options.filter(o => o.weight > 0);
-    const totalWeight = validOptions.reduce((sum, option) => sum + option.weight, 0);
-    if (totalWeight <= 0) {
-        if (options.length === 0) return null;
+
+    if (validOptions.length === 0) {
+        // Fall back to random selection from all options if no valid weights
         return options[Math.floor(Math.random() * options.length)].item;
     }
+
+    // Calculate total weight
+    const totalWeight = validOptions.reduce((sum, option) => sum + option.weight, 0);
+
+    // If total weight is 0 or less, return random item
+    if (totalWeight <= 0) {
+        return validOptions[Math.floor(Math.random() * validOptions.length)].item;
+    }
+
+    // Random number between 0 and totalWeight
     let random = Math.random() * totalWeight;
+
+    // Find the selected item
     for (const option of validOptions) {
-        if (random < option.weight) {
+        random -= option.weight;
+        if (random <= 0) {
             return option.item;
         }
-        random -= option.weight;
     }
-    return validOptions.length > 0 ? validOptions[validOptions.length - 1].item : null;
+
+    // Fallback to last valid option (should rarely happen)
+    return validOptions[validOptions.length - 1].item;
 };
 // --- End Re-added Helpers ---
 
@@ -78,31 +98,30 @@ const GameOfLifeCanvas = () => {
 
   // --- State for Simulation Parameters ---
   const [pulseGenerationInterval, setPulseGenerationInterval] = useState(DEFAULT_PULSE_GENERATION_INTERVAL);
-  const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR); // NEW state for speed factor
+  const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // NEW Default Weights from screenshot, adjusted L/R to 0.2
+  // Default Weights
   const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.2, 0.2, 0, 0, 0]);
 
-  // Use refs to hold the current state values
+  // Use refs to hold the current state values for real-time access during simulation
   const simParamsRef = useRef({
     pulseGenerationInterval,
-    pulseSpeedFactor, // Use speed factor in ref
+    pulseSpeedFactor,
     branchChance,
     fadeSpeed,
     directionWeights,
   });
 
-  // Update refs whenever state changes
+  // Update refs whenever state changes to ensure simulation always uses current values
   useEffect(() => {
     simParamsRef.current = {
       pulseGenerationInterval,
-      pulseSpeedFactor, // Update ref
+      pulseSpeedFactor,
       branchChance,
       fadeSpeed,
       directionWeights,
     };
-    // Update dependencies
   }, [pulseGenerationInterval, pulseSpeedFactor, branchChance, fadeSpeed, directionWeights]);
 
   // Helper to get neighbors (Check for existing connections)
@@ -421,28 +440,50 @@ const GameOfLifeCanvas = () => {
 
         // --- Branching Logic (Uses Weighted Selection) ---
         // Check if branching is geometrically possible and probabilistically triggered
-        if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
+        const shouldBranch = tendril.state === 'growing' &&
+                             tendril.path.length > 5 &&
+                             nonSelfNeighbors.length > 1 &&
+                             Math.random() < simParamsRef.current.branchChance;
+
+        if (shouldBranch) {
+            const currentBranchChance = simParamsRef.current.branchChance;
+            console.log(`Attempting branch for tendril ${tendril.id} with chance ${currentBranchChance}`);
+
             // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
-            const potentialBranchTargets = weightedNeighbors.filter(n => n.item.x !== nextCell.x || n.item.y !== nextCell.y);
+            const potentialBranchTargets = weightedNeighbors.filter(n =>
+                n.item.x !== nextCell.x || n.item.y !== nextCell.y
+            );
+
+            console.log(`Found ${potentialBranchTargets.length} potential branch targets`);
 
             if (potentialBranchTargets.length > 0) {
-                // *** CORRECTED: Use weighted selection for branch target ***
+                // Use weighted selection for branch target
                 const branchTarget = weightedRandomSelect(potentialBranchTargets);
                 if (branchTarget) { // Check if selection succeeded
                     const branchId = getUniqueTendrilId(tendril.sourceId);
+                    const branchPath = [...tendril.path]; // Copy the path up to current position
                     const branchTendril = {
                         id: branchId,
                         sourceId: tendril.sourceId,
-                        path: [...tendril.path, branchTarget], // Fix: branch starts from current head
+                        path: [...branchPath, branchTarget], // Branch extends from current path
                         state: 'growing',
                         pulsePosition: 0,
                         opacity: 1,
                     };
                     newBranches.push(branchTendril);
                     // Mark the branched cell on the grid immediately
-                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
-                    // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, {
+                        type: 'tendril',
+                        color: TENDRIL_COLOR,
+                        tendrilId: branchId,
+                        sourceId: tendril.sourceId
+                    });
+                    console.log(`SUCCESS: Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+                } else {
+                    console.log(`Failed to select branch target for tendril ${tendril.id}`);
                 }
+            } else {
+                console.log(`No valid branch targets for tendril ${tendril.id}`);
             }
         }
 
@@ -730,10 +771,23 @@ const GameOfLifeCanvas = () => {
                    />
                    <span className="w-6 text-right">{pulseSpeedFactor}x</span> {/* Display factor */}
                  </div>
-                 {/* Branch Chance Slider (remains the same) */}
+                 {/* Branch Chance Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="branch" className="flex-1">Branch Chance:</label>
-                   <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-2" />
+                   <input
+                     type="range"
+                     id="branch"
+                     min="0"
+                     max="0.5"
+                     step="0.01"
+                     value={branchChance}
+                     onChange={(e) => {
+                       const newValue = Number(e.target.value);
+                       console.log("Branch chance changed to:", newValue);
+                       setBranchChance(newValue);
+                     }}
+                     className="w-20 mx-2"
+                   />
                    <span className="w-6 text-right">{(branchChance * 100).toFixed(0)}%</span>
                  </div>
                  {/* Fade Speed Slider (remains the same) */}
