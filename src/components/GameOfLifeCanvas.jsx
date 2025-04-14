@@ -191,13 +191,14 @@ const GameOfLifeCanvas = () => {
                      sourcesRef.current.push({ x, y, id: sourceId });
                      const initialTendrilId = getUniqueTendrilId(sourceId);
                      tendrilsRef.current.push({
-                        id: initialTendrilId, sourceId: sourceId,
-                        path: [{ x, y }], state: 'growing', pulsePosition: 0, opacity: 1,
+                        id: initialTendrilId,
+                        sourceId: sourceId,
+                        path: [{ x, y }],
+                        state: 'growing',
+                        pulsePosition: 0,
+                        opacity: 1,
                      });
-                     console.log(`DEBUG: Initialized Tendril ${initialTendrilId} for Source ${sourceId} with path:`, [{ x, y }], 'state: growing');
                      gridRef.current[y][x].tendrilId = initialTendrilId; // Mark source cell with initial tendril ID
-                 } else {
-                    // console.warn(`Attempted to place source ${i} out of bounds at (${x}, ${y})`);
                  }
             }
         }
@@ -212,13 +213,10 @@ const GameOfLifeCanvas = () => {
 
     // *** NEW: Spawn Pulses Periodically ***
     const spawnPulses = () => {
-        console.log('DEBUG: spawnPulses called');
         tendrilsRef.current.forEach(tendril => {
-            console.log(`DEBUG: spawnPulses checking tendril ${tendril.id}, state: ${tendril.state}`);
             if (tendril.state === 'growing' || tendril.state === 'connected') {
                  const nearStartPulse = pulsesRef.current.some(p => p.tendrilId === tendril.id && p.position < PULSE_LENGTH);
                  if (!nearStartPulse) {
-                     console.log(`DEBUG: Spawning pulse for tendril ${tendril.id}`);
                      pulsesRef.current.push({
                         id: getUniquePulseId(),
                         tendrilId: tendril.id,
@@ -296,6 +294,8 @@ const GameOfLifeCanvas = () => {
         let currentHead = tendril.path[tendril.path.length - 1];
         let previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
         const currentWeights = simParamsRef.current.directionWeights;
+        // Initialize hasGrown flag to track growth success
+        let hasGrown = false;
 
         if (!currentHead) {
              // ... (handle missing head)
@@ -427,14 +427,13 @@ const GameOfLifeCanvas = () => {
 
             if (potentialBranchTargets.length > 0) {
                 // *** CORRECTED: Use weighted selection for branch target ***
-                const branchTargetItem = weightedRandomSelect(potentialBranchTargets);
-                if (branchTargetItem) { // Check if selection succeeded
-                    const branchTarget = branchTargetItem; // Assuming weightedRandomSelect returns the item directly
+                const branchTarget = weightedRandomSelect(potentialBranchTargets);
+                if (branchTarget) { // Check if selection succeeded
                     const branchId = getUniqueTendrilId(tendril.sourceId);
                     const branchTendril = {
                         id: branchId,
                         sourceId: tendril.sourceId,
-                        path: [...tendril.path.slice(0, -1), branchTarget], // Branch starts from cell *before* current head, towards target
+                        path: [...tendril.path, branchTarget], // Fix: branch starts from current head
                         state: 'growing',
                         pulsePosition: 0,
                         opacity: 1,
@@ -448,8 +447,6 @@ const GameOfLifeCanvas = () => {
         }
 
         // Move to the chosen next cell
-        currentHead = nextCell;
-        previousCell = tendril.path[tendril.path.length - 1]; // Update previous cell
         hasGrown = true;
         const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
         gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
@@ -648,9 +645,7 @@ const GameOfLifeCanvas = () => {
         // Spawn new pulses periodically
         const shouldSpawn = currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0;
         if (shouldSpawn) {
-            console.log(`DEBUG: Frame ${frameCountRef.current}, Interval ${currentGenInterval}. Calling spawnPulses.`);
             spawnPulses();
-            console.log('DEBUG: pulsesRef after spawn attempt:', JSON.stringify(pulsesRef.current));
         }
 
         // Update simulation state every frame
@@ -681,6 +676,10 @@ const GameOfLifeCanvas = () => {
 
     // Initial setup
     initializeSimulation();
+
+    // Add initial pulses to start the growth process
+    spawnPulses();
+
     render(); // Start the loop
 
     // Cleanup function
