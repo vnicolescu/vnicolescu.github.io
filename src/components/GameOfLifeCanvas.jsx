@@ -23,7 +23,7 @@ const FLASH_COLOR = '#FFFFFF';
 const CONNECTION_COLOR = '#F59E0B'; // Solar Amber from palette
 const FADING_COLOR = '#4B5563';
 
-// --- NEW: Directional Definitions ---
+// --- RE-ADD: Directional Definitions & Helpers ---
 // Order: TL, T, TR, L, R, BL, B, BR (indices 0-7)
 const DIRECTIONS = [
   { dx: -1, dy: -1, index: 0, name: 'TL' }, { dx: 0, dy: -1, index: 1, name: 'T' }, { dx: 1, dy: -1, index: 2, name: 'TR' },
@@ -32,7 +32,6 @@ const DIRECTIONS = [
 ];
 
 const getDirectionIndex = (dx, dy) => {
-    // Ensure dx, dy are within [-1, 0, 1]
     const normDx = Math.sign(dx);
     const normDy = Math.sign(dy);
     if (normDx === 0 && normDy === 0) return -1; // Center
@@ -40,19 +39,13 @@ const getDirectionIndex = (dx, dy) => {
     return dir ? dir.index : -1;
 }
 
-// Helper for weighted random selection
 const weightedRandomSelect = (options) => { // options: [{ item: neighbor, weight: number }]
     const validOptions = options.filter(o => o.weight > 0);
     const totalWeight = validOptions.reduce((sum, option) => sum + option.weight, 0);
-
     if (totalWeight <= 0) {
-        // If no positive weights, maybe fall back to uniform random chance among available?
-        // Or just return null if truly no options
         if (options.length === 0) return null;
-        // Fallback: pick random from original options if all weights were zero
         return options[Math.floor(Math.random() * options.length)].item;
     }
-
     let random = Math.random() * totalWeight;
     for (const option of validOptions) {
         if (random < option.weight) {
@@ -60,9 +53,9 @@ const weightedRandomSelect = (options) => { // options: [{ item: neighbor, weigh
         }
         random -= option.weight;
     }
-    // Fallback for floating point issues
     return validOptions.length > 0 ? validOptions[validOptions.length - 1].item : null;
 };
+// --- End Re-added Helpers ---
 
 // Utility to get random integer
 const getRandomInt = (max) => Math.floor(Math.random() * max);
@@ -86,8 +79,8 @@ const GameOfLifeCanvas = () => {
   const [pulseAdvanceInterval, setPulseAdvanceInterval] = useState(DEFAULT_PULSE_ADVANCE_INTERVAL);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // --- NEW: State for Directional Weights ---
-  const [directionWeights, setDirectionWeights] = useState(Array(8).fill(1)); // Default weight of 1 for all 8 directions
+  // *** RE-ADD: State for Directional Weights ***
+  const [directionWeights, setDirectionWeights] = useState(Array(8).fill(1));
 
   // Use refs to hold the current state values for use inside animation frame
   const simParamsRef = useRef({
@@ -95,7 +88,7 @@ const GameOfLifeCanvas = () => {
     pulseAdvanceInterval,
     branchChance,
     fadeSpeed,
-    directionWeights, // Add weights to ref
+    directionWeights, // *** RE-ADD: Add weights to ref ***
   });
 
   // Update refs whenever state changes
@@ -105,9 +98,9 @@ const GameOfLifeCanvas = () => {
       pulseAdvanceInterval,
       branchChance,
       fadeSpeed,
-      directionWeights, // Update ref
+      directionWeights, // *** RE-ADD: Update ref ***
     };
-  }, [pulseGenerationInterval, pulseAdvanceInterval, branchChance, fadeSpeed, directionWeights]);
+  }, [pulseGenerationInterval, pulseAdvanceInterval, branchChance, fadeSpeed, directionWeights]); // *** RE-ADD: Add dependency ***
 
   // Helper to get neighbors (Check for existing connections)
   const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId) => {
@@ -232,159 +225,161 @@ const GameOfLifeCanvas = () => {
         });
     };
 
-    // *** NEW: Advance Pulses and Trigger Growth (with Disconnection Check) ***
+    // *** NEW: Advance Pulses and Trigger Growth ***
     const advancePulses = () => {
         const pulsesToRemove = [];
-        const growthTendrils = new Set();
+        const growthTendrils = new Set(); // Tendrils that need to grow this step
 
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
             if (!tendril || tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
+                // Remove pulse if its tendril is gone or dead
                 pulsesToRemove.push(index);
                 return;
             }
 
-            // --- Disconnection Check ---
-            const currentPulseCoord = tendril.path[pulse.position];
-            if (currentPulseCoord) {
-                const gridCell = gridRef.current[currentPulseCoord.y]?.[currentPulseCoord.x];
-                if (!gridCell || (gridCell.type !== 'tendril' && gridCell.type !== 'source') || gridCell.tendrilId !== tendril.id) {
-                    // Path is broken where the pulse is!
-                    console.log(`Tendril ${tendril.id} detected disconnection at pulse position ${pulse.position}. Triggering fade.`);
-                    tendril.state = 'fading';
-                    tendril.opacity = Math.min(tendril.opacity, 0.1); // Start fading fast
-                    pulsesToRemove.push(index); // Remove this pulse
-                    return; // Stop processing this pulse
-                }
-            }
-            // --- End Disconnection Check ---
-
             pulse.position++;
 
-            // Check if pulse reached the end
-            if (pulse.position >= tendril.path.length - 1) {
-                if (tendril.state === 'growing') {
-                    growthTendrils.add(tendril.id);
-                }
-                pulsesToRemove.push(index);
+            // Check if pulse reached the end of the current path
+            if (pulse.position >= tendril.path.length -1 ) {
+                 if (tendril.state === 'growing') { // Only grow if tendril is in growing state
+                    growthTendrils.add(tendril.id); // Mark tendril for growth attempt
+                 }
+                 // Remove the pulse once it reaches the end (triggers growth or just finishes)
+                 pulsesToRemove.push(index);
             } else if (pulse.position >= tendril.path.length) {
-                pulsesToRemove.push(index);
+                 // Safety check: remove pulse if it somehow went past the end
+                 pulsesToRemove.push(index);
             }
         });
 
-        // Remove finished/orphaned/disconnected pulses
+        // Remove finished/orphaned pulses (iterate backwards)
         for (let i = pulsesToRemove.length - 1; i >= 0; i--) {
             pulsesRef.current.splice(pulsesToRemove[i], 1);
         }
 
-        // Trigger growth attempts
+        // Trigger growth attempts for marked tendrils
         growthTendrils.forEach(tendrilId => {
             const tendril = findTendrilById(tendrilId);
             if (tendril) {
-                tryGrowTendril(tendril);
+                tryGrowTendril(tendril); // Call the (renamed/refactored) growth function
             }
         });
     };
 
-    // *** Growth logic for a single tendril (Uses Directional Weights) ***
+    // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
         const gridUpdates = new Map();
         const newBranches = [];
-        const newlyConnectedSources = new Set();
+        const newlyConnectedSources = new Set(); // Keep track locally for fading trigger
         let currentHead = tendril.path[tendril.path.length - 1];
         let previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
-        const currentWeights = simParamsRef.current.directionWeights; // Get weights from ref
+        let hasGrown = false;
 
-        if (!currentHead) {
-             console.warn(`Tendril ${tendril.id} has no head? Path:`, tendril.path);
-             tendril.state = 'blocked';
-             return;
-         }
+        for (let step = 0; step < GROWTH_STEP; step++) {
+             if (!currentHead || currentHead.x < 0 || currentHead.x >= gridWidth || currentHead.y < 0 || currentHead.y >= gridHeight) {
+                 tendril.state = 'blocked'; break;
+             }
+            const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
 
-        // --- Growth Loop (only 1 step now) ---
-        if (currentHead.x < 0 || currentHead.x >= gridWidth || currentHead.y < 0 || currentHead.y >= gridHeight) {
-            tendril.state = 'blocked';
-            return;
-        }
+            // Filter out the immediate previous cell to prevent immediate backtracking
+            const validEmptyNeighbors = neighbors.empty.filter(n =>
+                !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
+            );
 
-        const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
+            // Filter out cells that are part of this tendril's path (self-collision)
+            const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
+                !tendril.path.some(p => p.x === n.x && p.y === n.y)
+            );
 
-        // --- Collision Check ---
-        if (neighbors.collision.length > 0) {
-            // ... (Collision logic remains the same)
-             return; // Stop growth attempt after collision
-        }
+            // Check for collision with other source tendrils first
+            if (neighbors.collision.length > 0) {
+                const collision = neighbors.collision[0];
+                // TODO: Implement proper connection logic (flash, etc.)
+                tendril.state = 'collided';
+                 console.log(`Tendril ${tendril.id} collided with source ${collision.otherSourceId}`);
+                 // Mark the other tendril as collided too, if found
+                 const otherTendril = findTendrilById(collision.otherTendrilId);
+                 if (otherTendril && otherTendril.state === 'growing') {
+                     otherTendril.state = 'collided';
+                 }
+                 // Add connection
+                 const connectionId = `c-${tendril.sourceId}-${collision.otherSourceId}`;
+                 if (!connectionsRef.current.some(c => c.id === connectionId)) {
+                      connectionsRef.current.push({
+                           id: connectionId,
+                           sourceId1: tendril.sourceId,
+                           sourceId2: collision.otherSourceId,
+                           path: [currentHead, {x: collision.x, y: collision.y}], // Simple path for now
+                           state: 'flashing',
+                           flashTimer: FLASH_DURATION_FRAMES,
+                       });
+                      // Mark colliding cells as connection points
+                      gridUpdates.set(`${currentHead.y}-${currentHead.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                      gridUpdates.set(`${collision.y}-${collision.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                      newlyConnectedSources.add(tendril.sourceId);
+                      newlyConnectedSources.add(collision.otherSourceId);
+                 }
+                break; // Stop growing this step after collision
+            }
 
-        // Filter out the immediate previous cell
-        const validEmptyNeighbors = neighbors.empty.filter(n =>
-            !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
-        );
+             // If no valid non-self neighbors are available, the tendril is blocked
+             if (nonSelfNeighbors.length === 0) {
+                // Check if blocked by self or just boundaries/other static elements
+                 if (neighbors.empty.length > 0 && validEmptyNeighbors.length === 0) {
+                     // Blocked by immediate backtrack prevention - allow stopping
+                     tendril.state = 'blocked';
+                 } else if (neighbors.empty.length > 0 && nonSelfNeighbors.length === 0) {
+                      // Blocked specifically by its own path
+                      tendril.state = 'blocked';
+                      // console.log(`Tendril ${tendril.id} blocked by self`);
+                 } else {
+                     // Blocked by edges or other tendrils it can't connect to yet
+                     tendril.state = 'blocked';
+                     // console.log(`Tendril ${tendril.id} blocked (no empty neighbors)`);
+                 }
+                break;
+            }
 
-        // Filter out cells already in this tendril's path
-        const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
-            !tendril.path.some(p => p.x === n.x && p.y === n.y)
-        );
+            // Choose the next cell from valid, non-self neighbors
+            const nextCell = nonSelfNeighbors[getRandomInt(nonSelfNeighbors.length)];
 
-         // Prepare neighbors with weights for weighted selection
-         const weightedNeighbors = nonSelfNeighbors.map(neighbor => {
-             const dx = neighbor.x - currentHead.x;
-             const dy = neighbor.y - currentHead.y;
-             const dirIndex = getDirectionIndex(dx, dy);
-             const weight = (dirIndex !== -1 && currentWeights[dirIndex] !== undefined) ? currentWeights[dirIndex] : 0; // Default to 0 if direction invalid or weight missing
-             return { item: neighbor, weight: weight };
-         }).filter(n => n.weight > 0); // Only consider neighbors with positive weight
+            // --- Branching Logic (Uses Weighted Selection) ---
+            // Check if branching is geometrically possible and probabilistically triggered
+            if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
+                // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
+                // Note: We use weightedNeighbors here because we only want to branch towards directions with positive weight
+                const potentialBranchTargets = nonSelfNeighbors.filter(n => n.x !== nextCell.x || n.y !== nextCell.y);
 
-         // --- Blocked Check ---
-         if (weightedNeighbors.length === 0) {
-             // Blocked if no valid neighbors OR no valid neighbors with positive weight
-             tendril.state = 'blocked';
-             // console.log(`Tendril ${tendril.id} blocked (no valid weighted neighbors)`);
-             return;
-         }
-
-        // --- Weighted Selection for Growth ---
-        const nextCell = weightedRandomSelect(weightedNeighbors);
-        if (!nextCell) { // Should not happen if weightedNeighbors.length > 0
-             console.warn(`Weighted random selection failed for tendril ${tendril.id}`);
-             tendril.state = 'blocked';
-             return;
-         }
-
-        // --- Branching Logic (Uses Weighted Selection) ---
-        if (tendril.state === 'growing' && tendril.path.length > 5 && weightedNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
-            // Find potential branch targets (neighbors other than the chosen nextCell)
-            const potentialBranchTargets = weightedNeighbors.filter(n => n.item.x !== nextCell.x || n.item.y !== nextCell.y);
-
-            if (potentialBranchTargets.length > 0) {
-                const branchTarget = weightedRandomSelect(potentialBranchTargets); // Select branch target based on weights
-                if (branchTarget) {
+                if (potentialBranchTargets.length > 0) {
+                    const branchTarget = potentialBranchTargets[getRandomInt(potentialBranchTargets.length)];
                     const branchId = getUniqueTendrilId(tendril.sourceId);
                     const branchTendril = {
                         id: branchId,
                         sourceId: tendril.sourceId,
-                        path: [...tendril.path, branchTarget],
+                        path: [...tendril.path, branchTarget], // Start branch from current head + branch target
                         state: 'growing',
                         pulsePosition: 0,
                         opacity: 1,
                     };
                     newBranches.push(branchTendril);
+                    // Mark the branched cell on the grid immediately
                     gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
                     // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
                 }
             }
+
+            // Move to the chosen next cell
+            currentHead = nextCell;
+            previousCell = tendril.path[tendril.path.length - 1]; // Update previous cell
+            hasGrown = true;
+            const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
+            gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
+            tendril.path.push(nextCell);
         }
 
-        // --- Apply Growth ---
-        // Set grid data for the chosen next cell
-        const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
-        gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
-        // Add the cell to the tendril's path
-        tendril.path.push(nextCell);
-        // currentHead = nextCell; // Update head if GROWTH_STEP > 1 was used
-        // previousCell = tendril.path[tendril.path.length - 2];
-
-        // --- Apply Updates ---
-        gridUpdates.forEach((update, key) => {
+        // Apply grid updates for this tendril's growth
+         gridUpdates.forEach((update, key) => {
             const [y, x] = key.split('-').map(Number);
             if (gridRef.current[y]?.[x]) {
                  // Don't overwrite existing connections with tendril updates from growth
@@ -393,9 +388,17 @@ const GameOfLifeCanvas = () => {
                  }
             }
         });
+
+        // Add any new branches created during growth
         tendrilsRef.current.push(...newBranches);
-        if (newlyConnectedSources.size > 0) {
-            // ... (fading logic, same)
+
+        // Trigger fading for connected sources
+         if (newlyConnectedSources.size > 0) {
+             tendrilsRef.current.forEach(t => {
+                 if (newlyConnectedSources.has(t.sourceId) && t.state === 'growing') {
+                     t.state = 'fading';
+                 }
+             });
         }
     };
 
@@ -527,25 +530,28 @@ const GameOfLifeCanvas = () => {
              context.globalAlpha = 1.0;
         });
 
-        // *** NEW: 3. Draw Pulses (Leading Edge Orange) ***
+        // *** NEW: 3. Draw Pulses (Overlay) ***
         context.globalAlpha = 1.0; // Pulses are full opacity
         pulsesRef.current.forEach(pulse => {
             const tendril = findTendrilById(pulse.tendrilId);
-            if (!tendril || tendril.opacity <= 0) return;
+            if (!tendril || tendril.opacity <= 0) return; // Skip if tendril faded
 
             for (let i = 0; i < PULSE_LENGTH; i++) {
                 const pulseSegmentPos = pulse.position - i;
                 if (pulseSegmentPos >= 0 && pulseSegmentPos < tendril.path.length) {
                     const cellCoord = tendril.path[pulseSegmentPos];
+                    // Boundary check
                     if (cellCoord.y < 0 || cellCoord.y >= gridHeight || cellCoord.x < 0 || cellCoord.x >= gridWidth) continue;
                     const gridCell = gridRef.current[cellCoord.y]?.[cellCoord.x];
 
+                    // Only draw pulse over tendril/source cells, not connections/empty
                     if (gridCell && (gridCell.type === 'source' || gridCell.tendrilId === tendril.id) && gridCell.type !== 'connection') {
                          let pulseColor;
-                         if (i === 0) pulseColor = CONNECTION_COLOR; // Leading edge is Orange/Amber
-                         else if (i === 1) pulseColor = PULSE_BRIGHT_COLOR; // Trail is White
-                         else pulseColor = PULSE_MID_COLOR; // Trail gets dimmer (was PULSE_DIM_COLOR)
+                         if (i === 0) pulseColor = PULSE_BRIGHT_COLOR; // Leading edge
+                         else if (i === 1) pulseColor = PULSE_MID_COLOR;
+                         else pulseColor = PULSE_DIM_COLOR; // i === 2
 
+                         // Apply pulse opacity based on tendril opacity?
                          context.globalAlpha = tendril.opacity;
                          context.fillStyle = pulseColor;
                          context.fillRect(cellCoord.x * CELL_SIZE, cellCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
@@ -614,11 +620,9 @@ const GameOfLifeCanvas = () => {
     };
   }, []); // Empty dependency array ensures this runs only once on mount
 
-  // --- UI Elements (Added Directional Grid) ---
-
+  // *** RE-ADD: Handler for weight changes ***
   const handleWeightChange = (index, value) => {
     const newWeights = [...directionWeights];
-    // Ensure weight is a non-negative number
     const numValue = Math.max(0, Number(value) || 0);
     newWeights[index] = numValue;
     setDirectionWeights(newWeights);
@@ -629,84 +633,61 @@ const GameOfLifeCanvas = () => {
       <canvas
         ref={canvasRef}
         id="gameOfLifeCanvas"
-        className="border border-indigo-500 flex-grow"
+        className="border border-indigo-500 flex-grow" // Added flex-grow
       >
         Your browser does not support the canvas element.
       </canvas>
-      {/* Controls Container */}
-      <div className="absolute bottom-4 left-4 flex space-x-6">
-          {/* Parameter Sliders */}
-          <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
-                {/* Pulse Interval Slider */}
-                <div className="flex items-center justify-between">
-                  <label htmlFor="pulseGen" className="flex-1">Pulse Interval:</label>
-                  <input
-                    type="range" id="pulseGen" min="5" max="120" step="1"
-                    value={pulseGenerationInterval}
-                    onChange={(e) => setPulseGenerationInterval(Number(e.target.value))}
-                    className="w-20 mx-2"
-                  />
-                  <span className="w-6 text-right">{pulseGenerationInterval}</span>
-                </div>
-                 {/* Pulse Speed Slider */}
+       {/* Controls Container */}
+       <div className="absolute bottom-4 left-4 flex space-x-6">
+           {/* Parameter Sliders */}
+           <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
+                 {/* Sliders remain the same */}
+                 <div className="flex items-center justify-between">
+                   <label htmlFor="pulseGen" className="flex-1">Pulse Interval:</label>
+                   <input type="range" id="pulseGen" min="5" max="120" step="1" value={pulseGenerationInterval} onChange={(e) => setPulseGenerationInterval(Number(e.target.value))} className="w-20 mx-2" />
+                   <span className="w-6 text-right">{pulseGenerationInterval}</span>
+                 </div>
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseAdv" className="flex-1">Pulse Speed:</label>
-                   <input
-                      type="range" id="pulseAdv" min="1" max="10" step="1"
-                      value={pulseAdvanceInterval}
-                      onChange={(e) => setPulseAdvanceInterval(Number(e.target.value))}
-                      className="w-20 mx-2"
-                   />
+                   <input type="range" id="pulseAdv" min="1" max="10" step="1" value={pulseAdvanceInterval} onChange={(e) => setPulseAdvanceInterval(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{pulseAdvanceInterval}</span>
                  </div>
-                 {/* Branch Chance Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="branch" className="flex-1">Branch Chance:</label>
-                   <input
-                      type="range" id="branch" min="0" max="0.5" step="0.01"
-                      value={branchChance}
-                      onChange={(e) => setBranchChance(Number(e.target.value))}
-                      className="w-20 mx-2"
-                   />
+                   <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{(branchChance * 100).toFixed(0)}%</span>
                  </div>
-                  {/* Fade Speed Slider */}
-                  <div className="flex items-center justify-between">
-                    <label htmlFor="fade" className="flex-1">Fade Speed:</label>
-                    <input
-                      type="range" id="fade" min="0.001" max="0.1" step="0.001"
-                      value={fadeSpeed}
-                      onChange={(e) => setFadeSpeed(Number(e.target.value))}
-                      className="w-20 mx-2"
-                    />
-                    <span className="w-6 text-right">{fadeSpeed.toFixed(3)}</span>
-                  </div>
-            </div>
-
-            {/* Directional Weights Grid */}
-             <div className="bg-gray-800 bg-opacity-80 p-2 rounded text-white text-xs">
-                 <label className="block text-center mb-1 font-semibold">Growth Bias</label>
-                 <div className="grid grid-cols-3 gap-1 w-24">
-                    {[0, 1, 2, 3, -1, 4, 5, 6, 7].map((dirIndex) => (
-                      <input
-                        key={dirIndex === -1 ? 'center' : DIRECTIONS[dirIndex].name}
-                        type="number"
-                        min="0"
-                        step="0.1"
-                        value={dirIndex === -1 ? '' : directionWeights[dirIndex]}
-                        onChange={dirIndex === -1 ? undefined : (e) => handleWeightChange(dirIndex, e.target.value)}
-                        disabled={dirIndex === -1}
-                        title={dirIndex === -1 ? 'Center' : DIRECTIONS[dirIndex].name}
-                        className={`
-                          w-full h-6 p-0.5 text-center rounded bg-gray-700 text-white text-xs
-                          border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                          ${dirIndex === -1 ? 'bg-gray-600 cursor-not-allowed' : 'hover:bg-gray-600'}
-                        `}
-                      />
-                    ))}
+                 <div className="flex items-center justify-between">
+                   <label htmlFor="fade" className="flex-1">Fade Speed:</label>
+                   <input type="range" id="fade" min="0.001" max="0.1" step="0.001" value={fadeSpeed} onChange={(e) => setFadeSpeed(Number(e.target.value))} className="w-20 mx-2" />
+                   <span className="w-6 text-right">{fadeSpeed.toFixed(3)}</span>
                  </div>
-             </div>
-        </div>
+           </div>
+
+           {/* *** RE-ADD: Directional Weights Grid *** */}
+            <div className="bg-gray-800 bg-opacity-80 p-3 rounded text-white text-xs">
+                <label className="block text-center mb-2 font-semibold">Growth Bias</label>
+                <div className="grid grid-cols-3 gap-1 w-32">
+                   {[0, 1, 2, 3, -1, 4, 5, 6, 7].map((dirIndex) => (
+                     <input
+                       key={dirIndex === -1 ? 'center' : DIRECTIONS[dirIndex].name}
+                       type="number"
+                       min="0"
+                       step="0.1"
+                       value={dirIndex === -1 ? '' : directionWeights[dirIndex]}
+                       onChange={dirIndex === -1 ? undefined : (e) => handleWeightChange(dirIndex, e.target.value)}
+                       disabled={dirIndex === -1}
+                       title={dirIndex === -1 ? 'Center' : DIRECTIONS[dirIndex].name}
+                       className={`
+                         w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm
+                         border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500
+                         ${dirIndex === -1 ? 'bg-gray-600 cursor-not-allowed' : 'hover:bg-gray-600'}
+                       `}
+                     />
+                   ))}
+                </div>
+            </div>
+       </div>
     </div>
   );
 };
