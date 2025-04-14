@@ -194,13 +194,14 @@ const GameOfLifeCanvas = () => {
                         id: initialTendrilId, sourceId: sourceId,
                         path: [{ x, y }], state: 'growing', pulsePosition: 0, opacity: 1,
                      });
+                     console.log(`DEBUG: Initialized Tendril ${initialTendrilId} for Source ${sourceId} with path:`, [{ x, y }], 'state: growing');
                      gridRef.current[y][x].tendrilId = initialTendrilId; // Mark source cell with initial tendril ID
                  } else {
                     // console.warn(`Attempted to place source ${i} out of bounds at (${x}, ${y})`);
                  }
             }
         }
-        console.log("Initialized Simulation with Sources:", sourcesRef.current.length);
+        console.log("DEBUG: Initialized Simulation with Sources:", sourcesRef.current.length, "Tendrils:", tendrilsRef.current.length);
     };
 
 
@@ -211,17 +212,17 @@ const GameOfLifeCanvas = () => {
 
     // *** NEW: Spawn Pulses Periodically ***
     const spawnPulses = () => {
+        console.log('DEBUG: spawnPulses called');
         tendrilsRef.current.forEach(tendril => {
-            // Only spawn pulses for tendrils that are still growing or connected (pulses might still travel on connected paths visually)
+            console.log(`DEBUG: spawnPulses checking tendril ${tendril.id}, state: ${tendril.state}`);
             if (tendril.state === 'growing' || tendril.state === 'connected') {
-                 // Prevent spawning too many pulses on very short/new tendrils?
-                 // Only spawn if no other pulse is currently near the start?
                  const nearStartPulse = pulsesRef.current.some(p => p.tendrilId === tendril.id && p.position < PULSE_LENGTH);
                  if (!nearStartPulse) {
+                     console.log(`DEBUG: Spawning pulse for tendril ${tendril.id}`);
                      pulsesRef.current.push({
                         id: getUniquePulseId(),
                         tendrilId: tendril.id,
-                        position: 0, // Start at the beginning of the path
+                        position: 0,
                      });
                  }
             }
@@ -343,7 +344,7 @@ const GameOfLifeCanvas = () => {
                         // Force weight to 0 to prevent moving here.
                         // console.log(`Penalty applied to ${neighbor.x},${neighbor.y} due to adjacency with ${checkX},${checkY}`);
                         weight = 0;
-                        break; // No need to check other adjacent cells for this neighbor
+                        break; // *** CORRECTED: Use break to exit inner loop only ***
                     }
                 }
             }
@@ -422,24 +423,27 @@ const GameOfLifeCanvas = () => {
         // Check if branching is geometrically possible and probabilistically triggered
         if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
             // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
-            // Note: We use weightedNeighbors here because we only want to branch towards directions with positive weight
             const potentialBranchTargets = weightedNeighbors.filter(n => n.item.x !== nextCell.x || n.item.y !== nextCell.y);
 
             if (potentialBranchTargets.length > 0) {
-                const branchTarget = potentialBranchTargets[getRandomInt(potentialBranchTargets.length)];
-                const branchId = getUniqueTendrilId(tendril.sourceId);
-                const branchTendril = {
-                    id: branchId,
-                    sourceId: tendril.sourceId,
-                    path: [...tendril.path, branchTarget], // Start branch from current head + branch target
-                    state: 'growing',
-                    pulsePosition: 0,
-                    opacity: 1,
-                };
-                newBranches.push(branchTendril);
-                // Mark the branched cell on the grid immediately
-                gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
-                // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+                // *** CORRECTED: Use weighted selection for branch target ***
+                const branchTargetItem = weightedRandomSelect(potentialBranchTargets);
+                if (branchTargetItem) { // Check if selection succeeded
+                    const branchTarget = branchTargetItem; // Assuming weightedRandomSelect returns the item directly
+                    const branchId = getUniqueTendrilId(tendril.sourceId);
+                    const branchTendril = {
+                        id: branchId,
+                        sourceId: tendril.sourceId,
+                        path: [...tendril.path.slice(0, -1), branchTarget], // Branch starts from cell *before* current head, towards target
+                        state: 'growing',
+                        pulsePosition: 0,
+                        opacity: 1,
+                    };
+                    newBranches.push(branchTendril);
+                    // Mark the branched cell on the grid immediately
+                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
+                    // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+                }
             }
         }
 
@@ -642,12 +646,15 @@ const GameOfLifeCanvas = () => {
         const { pulseGenerationInterval: currentGenInterval } = simParamsRef.current;
 
         // Spawn new pulses periodically
-        if (currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0) {
+        const shouldSpawn = currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0;
+        if (shouldSpawn) {
+            console.log(`DEBUG: Frame ${frameCountRef.current}, Interval ${currentGenInterval}. Calling spawnPulses.`);
             spawnPulses();
+            console.log('DEBUG: pulsesRef after spawn attempt:', JSON.stringify(pulsesRef.current));
         }
 
         // Update simulation state every frame
-        advancePulses(); // Calls the correctly defined function above
+        advancePulses();
         fadeTendrils();
         updateConnections();
 
