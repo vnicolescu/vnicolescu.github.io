@@ -81,8 +81,8 @@ const GameOfLifeCanvas = () => {
   const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR); // NEW state for speed factor
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // NEW Default Weights from screenshot
-  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.5, 0.5, 0, 0, 0]);
+  // NEW Default Weights from screenshot, adjusted L/R to 0.2
+  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.2, 0.2, 0, 0, 0]);
 
   // Use refs to hold the current state values
   const simParamsRef = useRef({
@@ -228,14 +228,13 @@ const GameOfLifeCanvas = () => {
         });
     };
 
-    // *** NEW: Advance Pulses and Trigger Growth ***
-    const advancePulsesInternal = () => { // Renamed original logic
+    // *** MODIFIED: Advance Pulses (incorporates speed factor directly) ***
+    const advancePulses = () => {
         const pulsesToRemove = [];
         const growthTendrils = new Set();
         const currentSpeedFactor = simParamsRef.current.pulseSpeedFactor;
-        // Calculate steps to advance based on factor (simple linear scaling for now)
-        // Ensure at least 1 step
-        const stepsToAdvance = Math.max(1, Math.floor(currentSpeedFactor)); // Adjust logic as needed
+        // Calculate steps to advance based on factor
+        const stepsToAdvance = Math.max(1, Math.floor(currentSpeedFactor));
 
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
@@ -244,8 +243,21 @@ const GameOfLifeCanvas = () => {
                 return;
             }
 
-            // --- Disconnection Check (remains the same) ---
-            // ... check gridCell ...
+            // --- Disconnection Check ---
+            const currentPulseCoord = tendril.path[pulse.position];
+            if (currentPulseCoord) {
+                const gridCell = gridRef.current[currentPulseCoord.y]?.[currentPulseCoord.x];
+                // Check if the cell the pulse IS CURRENTLY IN is still valid
+                if (!gridCell || (gridCell.type !== 'tendril' && gridCell.type !== 'source') || gridCell.tendrilId !== tendril.id) {
+                    // Path is broken where the pulse is!
+                    // console.log(`Tendril ${tendril.id} detected disconnection at pulse position ${pulse.position}. Triggering fade.`);
+                    tendril.state = 'fading';
+                    tendril.opacity = Math.min(tendril.opacity, 0.1);
+                    pulsesToRemove.push(index);
+                    return;
+                }
+            } // else { pulse.position is 0, check might not be needed or possible }
+            // --- End Disconnection Check ---
 
             // Advance position by calculated steps
             pulse.position += stepsToAdvance;
@@ -256,7 +268,7 @@ const GameOfLifeCanvas = () => {
                     growthTendrils.add(tendril.id);
                 }
                 pulsesToRemove.push(index);
-            } else if (pulse.position >= tendril.path.length) { // Still useful safety check
+            } else if (pulse.position >= tendril.path.length) {
                 pulsesToRemove.push(index);
             }
         });
@@ -275,119 +287,169 @@ const GameOfLifeCanvas = () => {
         });
     };
 
-    // Replace the old advancePulses in the scope with the internal version
-    advancePulses = advancePulsesInternal;
-
     // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
         const gridUpdates = new Map();
         const newBranches = [];
-        const newlyConnectedSources = new Set(); // Keep track locally for fading trigger
+        const newlyConnectedSources = new Set();
         let currentHead = tendril.path[tendril.path.length - 1];
         let previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
-        let hasGrown = false;
+        const currentWeights = simParamsRef.current.directionWeights;
 
-        for (let step = 0; step < GROWTH_STEP; step++) {
-             if (!currentHead || currentHead.x < 0 || currentHead.x >= gridWidth || currentHead.y < 0 || currentHead.y >= gridHeight) {
-                 tendril.state = 'blocked'; break;
-             }
-            const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
+        if (!currentHead) {
+             // ... (handle missing head)
+             return;
+         }
 
-            // Filter out the immediate previous cell to prevent immediate backtracking
-            const validEmptyNeighbors = neighbors.empty.filter(n =>
-                !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
-            );
+        const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
 
-            // Filter out cells that are part of this tendril's path (self-collision)
-            const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
-                !tendril.path.some(p => p.x === n.x && p.y === n.y)
-            );
+        // Filter out the immediate previous cell
+        const validEmptyNeighbors = neighbors.empty.filter(n =>
+            !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
+        );
 
-            // Check for collision with other source tendrils first
-            if (neighbors.collision.length > 0) {
-                const collision = neighbors.collision[0];
-                // TODO: Implement proper connection logic (flash, etc.)
-                tendril.state = 'collided';
-                 console.log(`Tendril ${tendril.id} collided with source ${collision.otherSourceId}`);
-                 // Mark the other tendril as collided too, if found
-                 const otherTendril = findTendrilById(collision.otherTendrilId);
-                 if (otherTendril && otherTendril.state === 'growing') {
-                     otherTendril.state = 'collided';
-                 }
-                 // Add connection
-                 const connectionId = `c-${tendril.sourceId}-${collision.otherSourceId}`;
-                 if (!connectionsRef.current.some(c => c.id === connectionId)) {
-                      connectionsRef.current.push({
-                           id: connectionId,
-                           sourceId1: tendril.sourceId,
-                           sourceId2: collision.otherSourceId,
-                           path: [currentHead, {x: collision.x, y: collision.y}], // Simple path for now
-                           state: 'flashing',
-                           flashTimer: FLASH_DURATION_FRAMES,
-                       });
-                      // Mark colliding cells as connection points
-                      gridUpdates.set(`${currentHead.y}-${currentHead.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
-                      gridUpdates.set(`${collision.y}-${collision.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
-                      newlyConnectedSources.add(tendril.sourceId);
-                      newlyConnectedSources.add(collision.otherSourceId);
-                 }
-                break; // Stop growing this step after collision
-            }
+        // Filter out cells already in this tendril's path (direct overlap)
+        const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
+            !tendril.path.some(p => p.x === n.x && p.y === n.y)
+        );
 
-             // If no valid non-self neighbors are available, the tendril is blocked
-             if (nonSelfNeighbors.length === 0) {
-                // Check if blocked by self or just boundaries/other static elements
-                 if (neighbors.empty.length > 0 && validEmptyNeighbors.length === 0) {
-                     // Blocked by immediate backtrack prevention - allow stopping
-                     tendril.state = 'blocked';
-                 } else if (neighbors.empty.length > 0 && nonSelfNeighbors.length === 0) {
-                      // Blocked specifically by its own path
-                      tendril.state = 'blocked';
-                      // console.log(`Tendril ${tendril.id} blocked by self`);
-                 } else {
-                     // Blocked by edges or other tendrils it can't connect to yet
-                     tendril.state = 'blocked';
-                     // console.log(`Tendril ${tendril.id} blocked (no empty neighbors)`);
-                 }
-                break;
-            }
+         // Prepare neighbors with weights, adding adjacency check
+         const weightedNeighbors = nonSelfNeighbors.map(neighbor => {
+             const dx = neighbor.x - currentHead.x;
+             const dy = neighbor.y - currentHead.y;
+             const dirIndex = getDirectionIndex(dx, dy);
+             let weight = (dirIndex !== -1 && currentWeights[dirIndex] !== undefined) ? currentWeights[dirIndex] : 0;
 
-            // Choose the next cell from valid, non-self neighbors
-            const nextCell = nonSelfNeighbors[getRandomInt(nonSelfNeighbors.length)];
+             // --- Adjacency Penalty Check ---
+             if (weight > 0) { // Only check if it's a potential candidate
+                const adjacentCellsToCheck = [
+                    [-1, -1], [-1, 0], [-1, 1],
+                    [ 0, -1],          [ 0, 1],
+                    [ 1, -1], [ 1, 0], [ 1, 1]
+                ];
+                for (const [adjDx, adjDy] of adjacentCellsToCheck) {
+                    const checkX = neighbor.x + adjDx;
+                    const checkY = neighbor.y + adjDy;
 
-            // --- Branching Logic (Uses Weighted Selection) ---
-            // Check if branching is geometrically possible and probabilistically triggered
-            if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
-                // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
-                // Note: We use weightedNeighbors here because we only want to branch towards directions with positive weight
-                const potentialBranchTargets = nonSelfNeighbors.filter(n => n.x !== nextCell.x || n.y !== nextCell.y);
+                    // Is the adjacent cell part of the current tendril's path?
+                    const isAdjacentToSelf = tendril.path.some(p => p.x === checkX && p.y === checkY);
 
-                if (potentialBranchTargets.length > 0) {
-                    const branchTarget = potentialBranchTargets[getRandomInt(potentialBranchTargets.length)];
-                    const branchId = getUniqueTendrilId(tendril.sourceId);
-                    const branchTendril = {
-                        id: branchId,
-                        sourceId: tendril.sourceId,
-                        path: [...tendril.path, branchTarget], // Start branch from current head + branch target
-                        state: 'growing',
-                        pulsePosition: 0,
-                        opacity: 1,
-                    };
-                    newBranches.push(branchTendril);
-                    // Mark the branched cell on the grid immediately
-                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
-                    // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+                    // Exclude adjacency to the current head itself or the previous cell
+                    const isAdjacentToHead = (checkX === currentHead.x && checkY === currentHead.y);
+                    const isAdjacentToPrev = previousCell && (checkX === previousCell.x && checkY === previousCell.y);
+
+                    if (isAdjacentToSelf && !isAdjacentToHead && !isAdjacentToPrev) {
+                        // This neighbor cell is touching the tendril's body somewhere else!
+                        // Force weight to 0 to prevent moving here.
+                        // console.log(`Penalty applied to ${neighbor.x},${neighbor.y} due to adjacency with ${checkX},${checkY}`);
+                        weight = 0;
+                        break; // No need to check other adjacent cells for this neighbor
+                    }
                 }
             }
+             // --- End Adjacency Penalty Check ---
 
-            // Move to the chosen next cell
-            currentHead = nextCell;
-            previousCell = tendril.path[tendril.path.length - 1]; // Update previous cell
-            hasGrown = true;
-            const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
-            gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
-            tendril.path.push(nextCell);
+             return { item: neighbor, weight: weight };
+         }).filter(n => n.weight > 0); // Filter again AFTER penalty applied
+
+        // Check for collision with other source tendrils first
+        if (neighbors.collision.length > 0) {
+            const collision = neighbors.collision[0];
+            // TODO: Implement proper connection logic (flash, etc.)
+            tendril.state = 'collided';
+            console.log(`Tendril ${tendril.id} collided with source ${collision.otherSourceId}`);
+            // Mark the other tendril as collided too, if found
+            const otherTendril = findTendrilById(collision.otherTendrilId);
+            if (otherTendril && otherTendril.state === 'growing') {
+                otherTendril.state = 'collided';
+            }
+            // Add connection
+            const connectionId = `c-${tendril.sourceId}-${collision.otherSourceId}`;
+            if (!connectionsRef.current.some(c => c.id === connectionId)) {
+                connectionsRef.current.push({
+                    id: connectionId,
+                    sourceId1: tendril.sourceId,
+                    sourceId2: collision.otherSourceId,
+                    path: [currentHead, {x: collision.x, y: collision.y}], // Simple path for now
+                    state: 'flashing',
+                    flashTimer: FLASH_DURATION_FRAMES,
+                });
+                // Mark colliding cells as connection points
+                gridUpdates.set(`${currentHead.y}-${currentHead.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                gridUpdates.set(`${collision.y}-${collision.x}`, { type: 'connection', color: FLASH_COLOR, connectionId });
+                newlyConnectedSources.add(tendril.sourceId);
+                newlyConnectedSources.add(collision.otherSourceId);
+            }
+            // Apply connection grid updates immediately before returning
+            gridUpdates.forEach((update, key) => {
+                const [y, x] = key.split('-').map(Number);
+                if (gridRef.current[y]?.[x]) {
+                    if (gridRef.current[y][x].type !== 'connection' || update.type === 'connection') { // Allow connection to overwrite
+                       gridRef.current[y][x] = { ...gridRef.current[y][x], ...update };
+                    }
+                }
+            });
+            return; // Exit function after handling collision
         }
+
+        // --- Blocked Check ---
+        if (weightedNeighbors.length === 0) {
+            // Check if blocked by self or just boundaries/other static elements
+             if (neighbors.empty.length > 0 && validEmptyNeighbors.length === 0) {
+                 // Blocked by immediate backtrack prevention - allow stopping
+                 tendril.state = 'blocked';
+             } else if (neighbors.empty.length > 0 && nonSelfNeighbors.length === 0) {
+                  // Blocked specifically by its own path
+                  tendril.state = 'blocked';
+                  // console.log(`Tendril ${tendril.id} blocked by self`);
+             } else {
+                 // Blocked by edges or other tendrils it can't connect to yet
+                 tendril.state = 'blocked';
+                 // console.log(`Tendril ${tendril.id} blocked (no empty neighbors)`);
+             }
+            return; // Exit function if blocked
+        }
+
+        // Choose the next cell using weighted random selection
+        const nextCell = weightedRandomSelect(weightedNeighbors);
+        if (!nextCell) { // Handle case where selection might fail (should be rare)
+            console.warn(`Weighted random selection failed for tendril ${tendril.id}, blocking.`);
+            tendril.state = 'blocked';
+            return;
+        }
+
+        // --- Branching Logic (Uses Weighted Selection) ---
+        // Check if branching is geometrically possible and probabilistically triggered
+        if (tendril.state === 'growing' && tendril.path.length > 5 && nonSelfNeighbors.length > 1 && Math.random() < simParamsRef.current.branchChance) {
+            // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
+            // Note: We use weightedNeighbors here because we only want to branch towards directions with positive weight
+            const potentialBranchTargets = weightedNeighbors.filter(n => n.item.x !== nextCell.x || n.item.y !== nextCell.y);
+
+            if (potentialBranchTargets.length > 0) {
+                const branchTarget = potentialBranchTargets[getRandomInt(potentialBranchTargets.length)];
+                const branchId = getUniqueTendrilId(tendril.sourceId);
+                const branchTendril = {
+                    id: branchId,
+                    sourceId: tendril.sourceId,
+                    path: [...tendril.path, branchTarget], // Start branch from current head + branch target
+                    state: 'growing',
+                    pulsePosition: 0,
+                    opacity: 1,
+                };
+                newBranches.push(branchTendril);
+                // Mark the branched cell on the grid immediately
+                gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: tendril.sourceId });
+                // console.log(`Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+            }
+        }
+
+        // Move to the chosen next cell
+        currentHead = nextCell;
+        previousCell = tendril.path[tendril.path.length - 1]; // Update previous cell
+        hasGrown = true;
+        const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
+        gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
+        tendril.path.push(nextCell);
 
         // Apply grid updates for this tendril's growth
          gridUpdates.forEach((update, key) => {
@@ -577,33 +639,15 @@ const GameOfLifeCanvas = () => {
         if (!canvasRef.current) return;
         frameCountRef.current++;
 
-        const { pulseGenerationInterval: currentGenInterval, pulseSpeedFactor: currentSpeedFactor } = simParamsRef.current;
-
-        // Calculate the effective advance interval based on the speed factor
-        // Lower base interval means faster steps. Higher factor means more steps skipped = faster.
-        // Ensure interval is at least 1 frame.
-        const effectiveAdvanceInterval = Math.max(1, Math.round(DEFAULT_PULSE_ADVANCE_INTERVAL / (currentSpeedFactor / DEFAULT_PULSE_SPEED_FACTOR))); // Adjust calculation if needed
-        // Alternative simpler calculation: skip frames based on speed factor
-        // const skipFrames = Math.max(0, Math.floor(currentSpeedFactor - 1)); // Needs adjustment based on desired speed range
+        const { pulseGenerationInterval: currentGenInterval } = simParamsRef.current;
 
         // Spawn new pulses periodically
         if (currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0) {
             spawnPulses();
         }
 
-        // Advance existing pulses based on effective interval
-        // This logic might need refinement: Should pulse speed affect how often advancePulses is CALLED,
-        // or how many steps a pulse takes WITHIN advancePulses?
-        // Current approach: Call advancePulses less frequently for slower speeds.
-        // Let's try calling advancePulses every frame but advancing position based on speed factor inside advancePulses.
-
-        // -- RETHINK: Modify advancePulses instead --
-        // if (effectiveAdvanceInterval > 0 && frameCountRef.current % effectiveAdvanceInterval === 0) {
-        //      advancePulses(); // Pass speed factor?
-        // }
-
-        // Update simulation state every frame (or based on speed?)
-        advancePulses(); // Call every frame now
+        // Update simulation state every frame
+        advancePulses(); // Calls the correctly defined function above
         fadeTendrils();
         updateConnections();
 
