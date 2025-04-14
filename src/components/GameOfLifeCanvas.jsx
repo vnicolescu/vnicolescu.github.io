@@ -3,25 +3,25 @@ import React, { useRef, useEffect } from 'react';
 // Simulation Constants
 const CELL_SIZE = 4;
 const NUM_SOURCES = 2; // *** Changed to 2 sources ***
-const GROWTH_STEP = 3;
+const GROWTH_STEP = 1; // Changed from 3 to 1 per user request
 const PULSE_LENGTH = 3;
 // const PULSE_INTERVAL_FRAMES = 4; // Replaced by pulse generation interval
-const PULSE_GENERATION_INTERVAL = 50; // How many frames between new pulses spawning from source
+const PULSE_GENERATION_INTERVAL = 30; // Changed from 50 to 30 (2Hz - faster pulses)
 const PULSE_ADVANCE_INTERVAL = 2; // How many frames between pulse moving one step
 const BRANCH_CHANCE = 0.10;
 const FADE_SPEED = 0.02;
 const FLASH_DURATION_FRAMES = 15;
 
 // Colors (using your palette)
-const SOURCE_COLOR = '#6366F1';
-const BACKGROUND_COLOR = '#262626';
+const SOURCE_COLOR = '#6366F1'; // Indigo Flame from palette
+const BACKGROUND_COLOR = '#000000'; // Changed to black for overlay effect
 const GRID_COLOR = '#374151';
-const TENDRIL_COLOR = '#9CA3AF';
-const PULSE_BRIGHT_COLOR = '#F59E0B';
-const PULSE_MID_COLOR = '#D97706';
-const PULSE_DIM_COLOR = '#B45309';
+const TENDRIL_COLOR = '#1E3A8A'; // Changed to navy blue per user request
+const PULSE_BRIGHT_COLOR = '#FFFFFF'; // Changed to white per user request
+const PULSE_MID_COLOR = '#E5E7EB'; // Slightly dimmer white
+const PULSE_DIM_COLOR = '#9CA3AF'; // Even dimmer white/gray
 const FLASH_COLOR = '#FFFFFF';
-const CONNECTION_COLOR = '#F59E0B';
+const CONNECTION_COLOR = '#F59E0B'; // Solar Amber from palette
 const FADING_COLOR = '#4B5563';
 
 // Utility to get random integer
@@ -208,14 +208,6 @@ const GameOfLifeCanvas = () => {
 
     // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
-        // This function now contains the logic previously in growTendrils,
-        // but focused on a single tendril. It needs the directional bias,
-        // self-collision check, and perpendicular branching logic added.
-
-        // --- Placeholder for the complex logic to be added in next steps ---
-        // console.log(`Attempting to grow tendril ${tendril.id}`);
-
-        // --- Basic structure (will be replaced) ---
         const gridUpdates = new Map();
         const newBranches = [];
         const newlyConnectedSources = new Set(); // Keep track locally for fading trigger
@@ -228,15 +220,67 @@ const GameOfLifeCanvas = () => {
              }
             const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
 
-            // TODO: Add Self-collision check here
-            // TODO: Add Connection check here (and break/set state)
-            // TODO: Implement Directional Bias for selecting nextCell
-            // TODO: Implement Perpendicular Branching check
-
-            if (neighbors.empty.length === 0) {
-                tendril.state = 'blocked'; break;
+            // Check for collision with other source tendrils
+            if (neighbors.collision.length > 0) {
+                const collision = neighbors.collision[0]; // Take the first collision
+                // Connection logic here...
+                tendril.state = 'collided';
+                break;
             }
-            const nextCell = neighbors.empty[getRandomInt(neighbors.empty.length)]; // *** Replace with weighted selection ***
+
+            // Check for self-collision - don't touch your own tendril
+            if (neighbors.selfCollision.length > 0) {
+                // If all available directions would cause self-collision, stop growing
+                if (neighbors.empty.length === 0) {
+                    tendril.state = 'blocked'; // Cornered by itself, so it stops
+                    break;
+                }
+
+                // Otherwise, try to grow in a direction that avoids self-collision
+                // Filter out empty neighbors that are adjacent to self-collision points
+                const safeEmptyNeighbors = neighbors.empty.filter(emptyCell => {
+                    // Check if this empty cell is adjacent to any self-collision point
+                    return !neighbors.selfCollision.some(selfCell =>
+                        Math.abs(emptyCell.x - selfCell.x) <= 1 &&
+                        Math.abs(emptyCell.y - selfCell.y) <= 1
+                    );
+                });
+
+                if (safeEmptyNeighbors.length > 0) {
+                    // Grow in a direction that avoids self-collision
+                    const nextCell = safeEmptyNeighbors[getRandomInt(safeEmptyNeighbors.length)];
+                    currentHead = nextCell;
+                    hasGrown = true;
+                    const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
+                    gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
+                    tendril.path.push(nextCell);
+                    continue;
+                }
+            }
+
+            // If no empty cells are available, tendril is blocked
+            if (neighbors.empty.length === 0) {
+                tendril.state = 'blocked';
+                break;
+            }
+
+            // Random chance to split/branch (only for growing tendrils with sufficient length)
+            if (tendril.state === 'growing' && tendril.path.length > 5 && Math.random() < BRANCH_CHANCE) {
+                // Create a new branch tendril starting from current head
+                const branchId = getUniqueTendrilId(tendril.sourceId);
+                const branchTendril = {
+                    id: branchId,
+                    sourceId: tendril.sourceId,
+                    path: [...tendril.path], // Copy the path up to this point
+                    state: 'growing',
+                    pulsePosition: 0,
+                    opacity: 1,
+                };
+                newBranches.push(branchTendril);
+            }
+
+            // Choose a direction for growth
+            const nextCell = neighbors.empty[getRandomInt(neighbors.empty.length)];
             currentHead = nextCell;
             hasGrown = true;
             const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
@@ -263,7 +307,6 @@ const GameOfLifeCanvas = () => {
                  }
              });
         }
-        // --- End Placeholder ---
     };
 
     // --- Fading Logic Implementation (Rule #9) ---
@@ -483,7 +526,7 @@ const GameOfLifeCanvas = () => {
 
 
   return (
-    <div className="w-full h-screen bg-gray-900 flex items-center justify-center p-5"> {/* Added padding */}
+    <div className="w-full h-screen bg-black flex items-center justify-center p-5"> {/* Changed bg-gray-900 to bg-black */}
       <canvas
         ref={canvasRef}
         id="gameOfLifeCanvas"
