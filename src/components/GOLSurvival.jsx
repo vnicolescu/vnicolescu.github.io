@@ -8,7 +8,7 @@ const DEFAULT_SIGNAL_FREQUENCY = 1.0; // Hz
 const DEFAULT_BRANCH_CHANCE = 0.10;
 const DEFAULT_PULSE_SPEED = 2.0; // Base cells per second
 const MAX_CELL_AGE = 600; // Frames for full color/conductivity transition
-const MIN_CONDUCTIVITY = 0.3;
+const MIN_CONDUCTIVITY = 0.8;
 const MAX_CONDUCTIVITY = 3.0;
 const PULSE_VISIBILITY = 2.0; // Brightness multiplier
 const PATH_INTEGRITY_CHECK_INTERVAL = 50; // Frames (less frequent)
@@ -86,9 +86,9 @@ const GOLSurvival = () => {
   const gridDimensions = useRef({ width: 0, height: 0 });
 
   // --- State for Simulation Parameters ---
-  const [signalFrequency, setSignalFrequency] = useState(DEFAULT_SIGNAL_FREQUENCY);
+  const [signalFrequency, setSignalFrequency] = useState(1.5); // Default 1.5 Hz
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
-  const [pulseSpeed, setPulseSpeed] = useState(DEFAULT_PULSE_SPEED);
+  const [pulseSpeed, setPulseSpeed] = useState(7.0); // Increased default speed again to 7.0
   const [directionWeights, setDirectionWeights] = useState([0.8, 2.5, 0.8, 0.3, 0, 0.3, 0.1, 0.1, 0.1]);
   // Maybe add controls for energy cost, food density later
 
@@ -225,13 +225,16 @@ const GOLSurvival = () => {
   }, [isWithinBounds]);
 
   const spawnFoodPellets = useCallback(() => {
-      // Simple probability check for spawning *a* pellet this frame
-      if (Math.random() >= FOOD_DENSITY * gridDimensions.current.width * gridDimensions.current.height) {
-          return;
-      }
+      // console.log("Attempting to spawn food..."); // Log entry
+      // Simple probability check for spawning *a* pellet this frame - REMOVED from here, check done in render loop
+      // if (Math.random() >= FOOD_DENSITY * gridDimensions.current.width * gridDimensions.current.height) {
+      //     return;
+      // }
 
       const gridWidth = gridDimensions.current.width;
       const gridHeight = gridDimensions.current.height;
+      if (!gridWidth || !gridHeight) return; // Ensure grid dimensions are valid
+
       const attempts = 10; // Try a few times to find a spot
 
       for (let i = 0; i < attempts; i++) {
@@ -242,7 +245,8 @@ const GOLSurvival = () => {
           let areaClear = true;
           for (let y = startY; y < startY + FOOD_PELLET_SIZE; y++) {
               for (let x = startX; x < startX + FOOD_PELLET_SIZE; x++) {
-                  if (!isWithinBounds(x, y) || gridRef.current[y][x].type !== 'empty') {
+                  // Ensure check is within bounds before accessing grid
+                  if (!isWithinBounds(x, y) || gridRef.current[y]?.[x]?.type !== 'empty') {
                       areaClear = false;
                       break;
                   }
@@ -251,6 +255,7 @@ const GOLSurvival = () => {
           }
 
           if (areaClear) {
+              // console.log(`%cFound clear area at (${startX}, ${startY}) after ${i+1} attempts. Placing food.`, 'color: green');
               // Place the food pellet
               const pelletId = `food-${frameCountRef.current}-${startX}-${startY}`;
               const pelletCells = new Map();
@@ -451,14 +456,14 @@ const GOLSurvival = () => {
           // Check tendril state and if signal was actually at the tip
           const canPotentiallyGrow = tendril.state === 'growing' || tendril.state === 'connected'; // Allow growth if connected too
           if (!canPotentiallyGrow) {
-              // console.log(`  -> Skipping growth for Tendril ${tendrilId}: state is ${tendril.state}`);
+              console.log(`%c-> Growth skipped for Tendril ${tendrilId}: state is ${tendril.state}`, 'color: orange'); // Added log
               return;
           }
 
           // Find the source
           const source = getSourceById(tendril.sourceId);
           if (!source || !source.isActive || source.energy <= 0) {
-              // console.log(`  -> Skipping growth for Tendril ${tendrilId}: Source inactive or out of energy (${source?.energy?.toFixed(0)})`);
+              console.log(`%c-> Growth skipped for Tendril ${tendrilId}: Source ${source?.id} inactive or out of energy (${source?.energy?.toFixed(0)} E)`, 'color: orange'); // Added log
               tendril.state = 'blocked'; // Block if out of energy
               return;
           }
@@ -615,6 +620,16 @@ const GOLSurvival = () => {
           return false;
       }
 
+      // Enhanced Collision Check: Look at neighbors of the potential next cell
+      const isCollisionRisky = (targetCell) => {
+          const targetNeighbors = getNeighbors(targetCell.x, targetCell.y, tendril.sourceId);
+          // Check if any neighbor of the target cell (excluding the current head) is already part of this tendril's path
+          return targetNeighbors.selfCollision.some(neighbor => {
+               const isCurrentHead = neighbor.x === currentHead.x && neighbor.y === currentHead.y;
+               return !isCurrentHead;
+          });
+      };
+
       const weightedNeighbors = validEmptyNeighbors.map(neighbor => {
           const dx = neighbor.x - currentHead.x;
           const dy = neighbor.y - currentHead.y;
@@ -638,13 +653,19 @@ const GOLSurvival = () => {
           return { item: neighbor, weight };
       }).filter(n => n.weight > 0);
 
-      if (weightedNeighbors.length === 0) {
-          tendril.state = 'blocked'; // No valid weighted neighbors
-          // console.log(`Tendril ${tendril.id} blocked - no weighted neighbors after penalties.`);
+      // Filter out neighbors that pose a high collision risk (adjacent to self)
+      const safeWeightedNeighbors = weightedNeighbors.filter(option => !isCollisionRisky(option.item));
+
+      if (safeWeightedNeighbors.length === 0) {
+          // If only risky neighbors are left, maybe pick one anyway or block?
+          // For now, let's block if only risky options remain.
+          // console.log(`Tendril ${tendril.id} blocked - only risky neighbors available.`);
+          tendril.state = 'blocked';
           return false;
+          // Alternative: const nextCell = weightedRandomSelect(weightedNeighbors); // Pick from original list
       }
 
-      const nextCell = weightedRandomSelect(weightedNeighbors);
+      const nextCell = weightedRandomSelect(safeWeightedNeighbors);
       if (!nextCell) {
           tendril.state = 'blocked'; // Selection failed
           // console.log(`Tendril ${tendril.id} blocked - weighted selection failed.`);
@@ -801,10 +822,31 @@ const GOLSurvival = () => {
   }, [getSourceById]); // Dependencies
 
   const handleTendrilCollision = useCallback((tendril1, tendril2) => {
-      // TODO: Implement logic when two tendrils meet
-      // - Check if from different sources
-      // - If different, trigger cooperation (merge sources, path optimization)
-  }, []);
+      // Basic collision handling: block both tendrils involved
+      if (!tendril1 || !tendril2) return;
+
+      // Only handle collisions between tendrils from different sources for now
+      if (tendril1.sourceId !== tendril2.sourceId) {
+          console.log(`%cCollision detected: Tendril ${tendril1.id} (Source ${tendril1.sourceId}) and Tendril ${tendril2.id} (Source ${tendril2.sourceId})`, 'color: yellow');
+          // Block both tendrils - prevents further growth into each other
+          tendril1.state = 'blocked';
+          tendril2.state = 'blocked';
+
+          // Mark the grid cell as a potential connection point (visualisation TBD)
+          const collisionPoint = tendril1.path[tendril1.path.length - 1]; // Collision happens at tendril1's new head
+          if (isWithinBounds(collisionPoint.x, collisionPoint.y)) {
+              const cell = gridRef.current[collisionPoint.y][collisionPoint.x];
+              if (cell) {
+                  cell.isConnectionPoint = true; // Add a flag
+                  // Maybe change color temporarily later in draw function
+              }
+          }
+
+          // TODO: Implement cooperation logic later (merge energy, path optimization)
+      }
+      // Note: Collisions between tendrils of the *same* source are not explicitly handled here
+      // and might still overlap depending on growth timing.
+  }, [isWithinBounds]);
 
   const triggerPathOptimization = useCallback((sourceId1, sourceId2, connectionPoint) => {
       // TODO: Implement path optimization logic (potentially complex)
@@ -813,18 +855,133 @@ const GOLSurvival = () => {
   }, []);
 
   const updateFadingTendrils = useCallback(() => {
-      // TODO: Implement fading for 'fading' and 'reabsorbing' states
-      // - Decrease opacity based on state (standard vs reabsorption speed)
-      // - If 'reabsorbing', return energy: source.energy += CELL_ENERGY_COST
-      // - Remove tendril from tendrilsRef Map and grid when opacity <= 0
-  }, []);
+      const tendrilsToRemove = new Set();
+      let energyRecovered = 0; // Track recovered energy for logging
+
+      tendrilsRef.current.forEach((tendril, tendrilId) => {
+          if (tendril.state === 'fading' || tendril.state === 'reabsorbing') {
+              const fadeSpeed = tendril.state === 'reabsorbing' ? REABSORPTION_FADE_SPEED : STANDARD_FADE_SPEED;
+              tendril.opacity -= fadeSpeed;
+
+              if (tendril.opacity <= 0) {
+                  tendrilsToRemove.add(tendrilId);
+
+                  // If reabsorbing, recover energy before removal
+                  if (tendril.state === 'reabsorbing') {
+                      const source = getSourceById(tendril.sourceId);
+                      if (source) {
+                          // Path includes the starting point, so length - 1 is the number of grown cells
+                          const cellsToRecover = Math.max(0, tendril.path.length - 1);
+                          const recovered = cellsToRecover * CELL_ENERGY_COST;
+                          source.energy += recovered;
+                          energyRecovered += recovered;
+                           // console.log(`Reabsorbed ${tendril.id} (${cellsToRecover} cells). Recovered ${recovered.toFixed(0)} E for source ${source.id}. New total: ${source.energy.toFixed(0)} E.`);
+                      }
+                  }
+              }
+          }
+      });
+
+      if (tendrilsToRemove.size > 0) {
+          // console.log(`%cupdateFadingTendrils: Removing ${tendrilsToRemove.size} tendrils. Recovered ${energyRecovered.toFixed(0)} E.`, 'color: gray');
+          // console.log(`Removing ${tendrilsToRemove.size} faded/reabsorbed tendrils. Recovered ${energyRecovered.toFixed(0)} E from reabsorption.`);
+
+          // --- Grid Cleanup --- Need to be careful with shared cells (branch points)
+          const cellsToReset = new Map(); // Track cells potentially needing reset (key: "x,y")
+
+          tendrilsToRemove.forEach(tendrilId => {
+              const removedTendril = tendrilsRef.current.get(tendrilId);
+              if (!removedTendril) return;
+
+              // Add all cells in the removed path to the potential reset list
+              removedTendril.path.forEach(p => {
+                  const key = `${p.x},${p.y}`;
+                  if (!cellsToReset.has(key)) {
+                      cellsToReset.set(key, new Set());
+                  }
+                  cellsToReset.get(key).add(removedTendril.id);
+              });
+
+              // Actually remove from the Map
+              tendrilsRef.current.delete(tendrilId);
+          });
+
+          // Now process the grid cells that were part of removed tendrils
+          cellsToReset.forEach((removedIdsOnCell, key) => {
+              const [x, y] = key.split(',').map(Number);
+              if (!isWithinBounds(x, y)) return;
+
+              const cell = gridRef.current[y][x];
+              if (!cell || cell.type === 'empty' || cell.type === 'source') return; // Skip empty/source cells
+
+              if (cell.tendrilId) {
+                  const currentIds = cell.tendrilId.split(',');
+                  // Filter out IDs that were just removed
+                  const remainingIds = currentIds.filter(id => !removedIdsOnCell.has(id));
+
+                  if (remainingIds.length === 0) {
+                      // No tendrils left on this cell, reset it to empty
+                      gridRef.current[y][x] = {
+                          type: 'empty',
+                          color: BACKGROUND_COLOR,
+                          tendrilId: null,
+                          sourceId: null,
+                          foodPelletId: null,
+                          opacity: 1,
+                          isBranchPoint: false,
+                          isConnectionPoint: false,
+                          creationFrame: 0,
+                      };
+                  } else {
+                      // Update the cell with the remaining tendril IDs
+                      cell.tendrilId = remainingIds.join(',');
+                      // Recalculate opacity/state? Maybe just leave it based on one of the remaining?
+                      const firstRemainingTendril = getTendrilById(remainingIds[0]);
+                      cell.opacity = firstRemainingTendril ? firstRemainingTendril.opacity : 1;
+                      cell.isBranchPoint = remainingIds.length > 1; // Still a branch point if >1 left
+                  }
+              } else {
+                   // Cell had no tendril ID but was in a path? Reset just in case.
+                   gridRef.current[y][x] = {
+                       type: 'empty',
+                       color: BACKGROUND_COLOR,
+                       tendrilId: null, sourceId: null, foodPelletId: null,
+                       opacity: 1, isBranchPoint: false, isConnectionPoint: false, creationFrame: 0,
+                   };
+              }
+          });
+      }
+  }, [getSourceById, getTendrilById, isWithinBounds]);
 
   const verifyPathIntegrity = useCallback(() => {
-      // TODO: Implement simplified path integrity check
-      // - Iterate tendrils Map
-      // - For branches, check if parent exists in Map and parent.state isn't 'fading'/'reabsorbing'
-      // - If check fails, set tendril.state = 'fading' (no energy change)
-  }, []);
+       // More robust check: Iteratively mark disconnected branches
+       let changed = true;
+       let markedThisPass = 0;
+       const maxPasses = tendrilsRef.current.size; // Safety break
+       let passes = 0;
+
+       while (changed && passes < maxPasses) {
+           changed = false;
+           markedThisPass = 0;
+           tendrilsRef.current.forEach((tendril) => {
+               // Only check active branches not already marked
+               if (tendril.isBranch && tendril.parentId && tendril.state !== 'fading' && tendril.state !== 'reabsorbing') {
+                   const parentTendril = getTendrilById(tendril.parentId);
+                   if (!parentTendril || parentTendril.state === 'fading' || parentTendril.state === 'reabsorbing') {
+                       tendril.state = 'fading';
+                       markedThisPass++;
+                       changed = true;
+                   }
+               }
+               // Also check root tendrils - if blocked for too long? (Optional enhancement)
+           });
+           passes++;
+       }
+
+       // if (markedThisPass > 0 || passes > 1) {
+       //     console.log(`Path Integrity: Marked ${markedThisPass} branches as fading. Completed in ${passes} passes.`);
+       // }
+  }, [getTendrilById]);
 
   const checkSourcesForRegeneration = useCallback(() => {
       // TODO: Implement source regeneration logic if all its tendrils are gone
@@ -931,6 +1088,9 @@ const GOLSurvival = () => {
        currentTimeRef.current = timestamp;
        const deltaTime = timestamp - prevTime;
 
+       // Log deltaTime occasionally for performance check
+       if(frameCountRef.current % 60 === 0) { console.log(`DeltaTime: ${deltaTime.toFixed(2)}ms`); }
+
        safeExecute(frameCountRef, () => { frameCountRef.current++; });
 
        const currentSimParams = simParamsRef.current;
@@ -951,7 +1111,8 @@ const GOLSurvival = () => {
        safeExecute(null, triggerGrowthAtTips, newlyReachedTips);
 
        // 4. Spawn Food Periodically/Randomly
-       if (Math.random() < FOOD_DENSITY * gridDimensions.current.width * gridDimensions.current.height) {
+       // Increased probability: 2% chance per frame to attempt spawning
+       if (Math.random() < 0.02) {
           safeExecute(null, spawnFoodPellets);
        }
 
