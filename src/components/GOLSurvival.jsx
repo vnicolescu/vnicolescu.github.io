@@ -646,7 +646,7 @@ const GOLSurvival = () => {
           // If this is a branch point, propagate signals
           if (cell.isBranchPoint) {
               console.log(`Found branch point at (${point.x}, ${point.y}) while processing tendril ${tendril.id}`);
-              // Use the external propagateSignalToBranches function
+              // Pass the point object with coordinates, not the cell
               propagateSignalToBranches(tendril, cell, point);
           }
       }
@@ -1772,14 +1772,14 @@ const GOLSurvival = () => {
   const foodCountRef = useRef(0);
 
   // --- NEW: Function to handle signal propagation at branch points ---
-  const propagateSignalToBranches = useCallback((originTendril, branchCell, positionInPath) => {
-      if (!branchCell || !branchCell.isBranchPoint || !branchCell.tendrilId) {
+  const propagateSignalToBranches = useCallback((originTendril, branchCell, branchPoint) => {
+      if (!branchCell || !branchCell.isBranchPoint || !branchCell.tendrilId || !branchPoint) {
           console.warn("Invalid call to propagateSignalToBranches: Missing data.");
           return;
       }
 
       const allTendrilIds = branchCell.tendrilId.split(',');
-      // console.log(`Propagating signal at branch point (${branchCell.x},${branchCell.y}). IDs: ${allTendrilIds.join(',')}`);
+      console.log(`Propagating signal at branch point (${branchPoint.x},${branchPoint.y}). IDs: ${allTendrilIds.join(',')}`);
 
       allTendrilIds.forEach(branchTendrilId => {
           // Skip propagating back to the tendril the signal came from
@@ -1797,16 +1797,34 @@ const GOLSurvival = () => {
           }
 
           // Find where this branch point is in the branch's path
-          // Use the actual branchCell coordinates for matching
-          const branchPointCoords = { x: branchCell.x, y: branchCell.y }; // Need to ensure branchCell has coords or get them
-          const branchPointIndexInBranch = branchTendril.path.findIndex(p => p.x === branchPointCoords.x && p.y === branchPointCoords.y);
-
+          // Use the coordinates from the branchPoint parameter
+          const branchPointIndexInBranch = branchTendril.path.findIndex(p =>
+              p.x === branchPoint.x && p.y === branchPoint.y
+          );
 
           if (branchPointIndexInBranch === -1) {
-               console.warn(`Branch point (${branchPointCoords.x}, ${branchPointCoords.y}) not found in path of branch ${branchTendril.id}. Cannot propagate signal.`);
-              // Maybe add approximate matching later if needed
+               console.warn(`Branch point (${branchPoint.x}, ${branchPoint.y}) not found in path of branch ${branchTendril.id}. Cannot propagate signal.`);
+
+               // Try approximate matching for greater resilience
+               const approximateMatch = branchTendril.path.findIndex(p =>
+                   Math.abs(p.x - branchPoint.x) <= 1 && Math.abs(p.y - branchPoint.y) <= 1
+               );
+
+               if (approximateMatch !== -1) {
+                   console.log(`Found approximate match for branch point at position ${approximateMatch} in branch ${branchTendril.id}`);
+                   branchTendril.signalState = 'propagating';
+                   branchTendril.signalPosition = approximateMatch + 1; // Start from next position
+                   branchTendril.fractionalPos = approximateMatch + 1;
+
+                   // Check bounds for next position
+                   if(branchTendril.signalPosition >= branchTendril.path.length) {
+                      branchTendril.signalState = 'reached_tip';
+                      branchTendril.signalPosition = branchTendril.path.length - 1;
+                      branchTendril.fractionalPos = branchTendril.path.length - 1;
+                   }
+               }
           } else {
-              // console.log(`  -> Propagating signal to branch ${branchTendril.id} starting at index ${branchPointIndexInBranch}`);
+              console.log(`  -> Propagating signal to branch ${branchTendril.id} starting at index ${branchPointIndexInBranch}`);
               branchTendril.signalState = 'propagating';
               // Start signal propagation from the *next* cell in the branch path
               branchTendril.signalPosition = branchPointIndexInBranch + 1;

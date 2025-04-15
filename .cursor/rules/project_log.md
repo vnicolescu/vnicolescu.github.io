@@ -27,3 +27,24 @@
     - Optimized visibility and performance for smooth animation
   - **Status:** Fully functional with multiple interacting systems creating emergent behaviors similar to natural growth patterns.
   - **Next:** Consider additional environmental influences, obstacles, and connection behaviors.
+
+- **[Date Placeholder - Estimate Today's Date]**: Survival Mechanics WIP (Branch: `feature/survival-mechanics-wip`)
+  - **Feature:** Added initial survival mechanics (energy, food) to GOL simulation.
+  - **Achievements:**
+    - Introduced source energy (`INITIAL_SOURCE_ENERGY`) and energy cost per cell (`CELL_ENERGY_COST`).
+    - Implemented food pellet spawning (`spawnFoodPellets`) and consumption (`handleFoodCollision`).
+    - Sources now gain energy from consuming food.
+    - Basic tendril fading states added (`fading`, `reabsorbing` - logic incomplete).
+    - Fixed critical `propagateSignalToBranches is not defined` error, allowing signals to traverse branch points.
+  - **Status:** Work-in-progress, simulation remains unstable. Branching and overall stability need further debugging.
+  - **Next:** Stabilize simulation, refine branching, implement path optimization/reabsorption.
+
+- **[Date: 2024-06-09]**: Survival Branching Robustness & Signal Propagation Fix (Merged)
+  - **Feature:** Signals now reliably propagate through branch points, enabling true tree-like and neural network growth.
+  - **Improvements:**
+    - Fixed coordinate mismatch bug in branch signal propagation.
+    - Added approximate matching for branch points (robust to grid/rounding errors).
+    - Enhanced logging and code comments for future debugging and maintainability.
+    - Confirmed stable survival, food, and energy mechanics.
+    - All UI controls and visual feedback working as intended.
+  - **Status:** Stable baseline for GOL Survival simulation with robust branching and resource mechanics.
