@@ -13,9 +13,10 @@ const MAX_BRANCH_ATTEMPTS = 5; // Reduce attempts to avoid hangs
 const SOURCE_REGENERATION_DELAY = 120; // Increase delay
 const MIN_PATH_LENGTH_FOR_BRANCHING = 5; // Increase slightly
 const BRANCH_ADJACENCY_IMMUNITY_STEPS = 20; // Increased from 5 to 20
-const MAX_CELL_AGE = 200; // Reduced from 1000 to 200 for faster color transition
-const MIN_CONDUCTIVITY = 0.5; // Minimum conductivity multiplier for young cells
-const MAX_CONDUCTIVITY = 2.0; // Maximum conductivity multiplier for old cells
+const MAX_CELL_AGE = 600; // Increased from 200 to 600 for longer color transition
+const MIN_CONDUCTIVITY = 0.3; // Decreased from 0.5 to 0.3 for slower young cells
+const MAX_CONDUCTIVITY = 3.0; // Increased from 2.0 to 3.0 for faster old cells
+const PULSE_VISIBILITY = 2.5; // Controls how visible pulses are
 
 // --- Colors (using your palette) ---
 const SOURCE_COLOR = '#6366F1';
@@ -376,8 +377,8 @@ const GameOfLifeCanvas = () => {
             const conductivity = getConductivityFromAge(cell.age);
 
             // Calculate how far signal should travel this frame
-            // Reduced speed factor for better visibility
-            const cellsToTravel = basePulseSpeed * conductivity * (deltaTime / 1500); // Slower to increase visibility
+            // Adjusted speed multiplier for better visualization on different machines
+            const cellsToTravel = basePulseSpeed * conductivity * (deltaTime / 1000);
 
             // Fractional position tracking for smooth movement
             const fractionalPos = tendril.fractionalPos || currentSignalPos;
@@ -385,6 +386,21 @@ const GameOfLifeCanvas = () => {
 
             // Convert to integer position for actual rendering and checks
             const newIntPos = Math.floor(newFractionalPos);
+
+            // Important! Check for branch points between the current position and the next position
+            if (newIntPos > currentSignalPos) {
+                // Check each point we're moving through for branch points
+                for (let checkPos = currentSignalPos + 1; checkPos <= newIntPos && checkPos < pathLength; checkPos++) {
+                    const checkPoint = tendril.path[checkPos];
+                    if (!checkPoint) continue;
+
+                    const gridCell = gridRef.current[checkPoint.y]?.[checkPoint.x];
+                    if (gridCell?.isBranchPoint) {
+                        // This is a branch point! Try to propagate to any branches
+                        propagateSignalToBranches(tendril, checkPoint, checkPos);
+                    }
+                }
+            }
 
             // Ensure we don't exceed path length
             const nextPos = Math.min(newIntPos, pathLength - 1);
@@ -404,53 +420,114 @@ const GameOfLifeCanvas = () => {
             }
         });
 
+        // Helper function to propagate signals to branches
+        function propagateSignalToBranches(tendril, branchPoint, positionInPath) {
+            const gridCell = gridRef.current[branchPoint.y]?.[branchPoint.x];
+            if (!gridCell || !gridCell.isBranchPoint) return;
+
+            const allTendrilIds = (gridCell.tendrilId || '').split(',');
+            console.log(`Found branch point at (${branchPoint.x},${branchPoint.y}) with tendril IDs: ${allTendrilIds.join(', ')}`);
+
+            allTendrilIds.forEach(branchTendrilId => {
+                // Skip propagating to self
+                if (branchTendrilId === tendril.id) return;
+
+                const branchTendril = findTendrilById(branchTendrilId);
+                if (!branchTendril) return;
+
+                // Skip if branch is not active or already has a signal
+                if (branchTendril.state !== 'growing' && branchTendril.state !== 'connected') return;
+                if (branchTendril.signalState !== 'idle') return;
+
+                // Find where the branch point is in the branch's path
+                const branchPointIndexInBranch = branchTendril.path.findIndex(p =>
+                    p.x === branchPoint.x && p.y === branchPoint.y
+                );
+
+                if (branchPointIndexInBranch === -1) {
+                    // Try approximate matching
+                    const approximateIndex = branchTendril.path.findIndex(p =>
+                        Math.abs(p.x - branchPoint.x) <= 1 && Math.abs(p.y - branchPoint.y) <= 1
+                    );
+
+                    if (approximateIndex !== -1) {
+                        console.log(`Propagating signal to branch ${branchTendril.id} at approximate position ${approximateIndex}`);
+                        branchTendril.signalState = 'propagating';
+                        branchTendril.signalPosition = approximateIndex;
+                        branchTendril.fractionalPos = approximateIndex;
+                    }
+                } else {
+                    console.log(`Propagating signal to branch ${branchTendril.id} at position ${branchPointIndexInBranch}`);
+                    branchTendril.signalState = 'propagating';
+                    branchTendril.signalPosition = branchPointIndexInBranch;
+                    branchTendril.fractionalPos = branchPointIndexInBranch;
+                }
+            });
+        }
+
+        // Apply all the signal updates
         signalsToUpdate.forEach(({ tendrilId, nextState, nextPos, fractionalPos }) => {
             const tendril = findTendrilById(tendrilId);
             if (tendril) {
                 tendril.signalState = nextState;
                 tendril.signalPosition = nextPos;
                 tendril.fractionalPos = fractionalPos;
-
-                if (nextState === 'propagating') {
-                    const currentCellCoord = tendril.path[nextPos];
-                    if (currentCellCoord) {
-                        const gridCell = gridRef.current[currentCellCoord.y]?.[currentCellCoord.x];
-                        if (gridCell?.isBranchPoint) {
-                            const allIds = (gridCell.tendrilId || '').split(',');
-                            allIds.forEach(id => {
-                                if (id === tendril.id) return;
-                                const branchTendril = findTendrilById(id);
-                                if (branchTendril && branchTendril.signalState === 'idle' && (branchTendril.state === 'growing' || branchTendril.state === 'connected')) {
-                                    const branchStartIndex = branchTendril.path.findIndex(p => p.x === currentCellCoord.x && p.y === currentCellCoord.y);
-                                    if (branchStartIndex !== -1) {
-                                        branchTendril.signalState = 'propagating';
-                                        branchTendril.signalPosition = branchStartIndex;
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
             }
         });
+
         return newlyReachedTips;
     };
 
   // --- Growth & Branching Logic ---
     const triggerGrowthAtTips = (tendrilIds) => {
         if (tendrilIds.size === 0) return;
+        console.log(`Frame ${frameCountRef.current}: Triggering growth for tips:`, Array.from(tendrilIds));
+
+        // Track tendril state changes for diagnostics
+        let growthAttempts = 0;
+        let successfulGrowth = 0;
+        let blockedTips = 0;
+
         tendrilIds.forEach(tendrilId => {
             const tendril = findTendrilById(tendrilId);
-            if (tendril && tendril.state === 'growing') {
+            if (!tendril) return;
+
+            // Verify tip can grow (must be in 'growing' state and have a signal at its tip)
+            const isGrowing = tendril.state === 'growing';
+            const hasSignalAtTip = tendril.signalState === 'reached_tip' &&
+                                  tendril.signalPosition === tendril.path.length - 1;
+
+            if (isGrowing && hasSignalAtTip) {
+                growthAttempts++;
+                console.log(`  -> Attempting growth for Tendril ${tendrilId}`);
+
+                // Try to grow the tendril
+                const prePathLength = tendril.path.length;
                 safeExecute(tryGrowTendril, tendril);
+                const postPathLength = tendril.path.length;
+
+                if (postPathLength > prePathLength) {
+                    // Growth succeeded
+                    successfulGrowth++;
+                } else if (tendril.state === 'blocked') {
+                    // Growth was blocked
+                    blockedTips++;
+                }
             } else if (tendril) {
+                console.log(`  -> Skipping growth for Tendril ${tendrilId}: isGrowing=${isGrowing}, hasSignalAtTip=${hasSignalAtTip}`);
             }
+
             // Always reset signal state after processing tip
             if (tendril) {
+                 console.log(`  -> Resetting signal state for Tendril ${tendrilId} to idle`);
                  tendril.signalState = 'idle';
                  tendril.signalPosition = -1;
+                 tendril.fractionalPos = -1;
             }
         });
+
+        // Log summary
+        console.log(`Growth summary: ${growthAttempts} attempts, ${successfulGrowth} successes, ${blockedTips} blocked.`);
     };
 
     const tryGrowTendril = (tendril) => {
@@ -1183,8 +1260,8 @@ const GameOfLifeCanvas = () => {
             for (let x = 0; x < gridDimensions.current.width; x++) {
                 const cell = gridRef.current[y][x];
                 if (cell && cell.type !== 'empty' && cell.age < MAX_CELL_AGE) {
-                    // Increase aging by 2 instead of 1 for faster color changes
-                    cell.age += 2;
+                    // Increase by 1 for slower color transition (was 2)
+                    cell.age += 1;
 
                     // Only update color if it's a tendril cell (not source/connection)
                     if (cell.type === 'tendril') {
@@ -1212,7 +1289,8 @@ const GameOfLifeCanvas = () => {
             const { signalFrequency: currentSignalFrequency } = simParamsRef.current;
 
             // Calculate time-based interval - How often should signals be emitted (in ms)
-            const intervalMilliseconds = currentSignalFrequency > 0 ? 1000 / currentSignalFrequency : Infinity;
+            // Direct conversion from Hz to ms interval (no hidden multiplier)
+            const intervalMilliseconds = 1000 / currentSignalFrequency;
             const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
 
             // 1. Emit Signal Periodically (Time-based)
@@ -1277,7 +1355,7 @@ const GameOfLifeCanvas = () => {
         // 1. Draw Grid Background & Static Elements
         for (let y = 0; y < gridDimensions.current.height; y++) {
             for (let x = 0; x < gridDimensions.current.width; x++) {
-                const cell = gridRef.current[y]?.[x];
+                const cell = gridRef.current[y][x];
                 if (!cell) continue;
 
                 let drawColor = BACKGROUND_COLOR; // Default to background
@@ -1300,7 +1378,6 @@ const GameOfLifeCanvas = () => {
                          }
                      } else if (cell.opacity < 1 && FADING_COLOR_INTERPOLATE) {
                           // Interpolate color for fading non-branch points
-                          const bgColor = parseInt(BACKGROUND_COLOR.slice(1), 16);
                           const cellRgb = parseHex(cell.color);
                           const bgRgb = parseHex(BACKGROUND_COLOR);
 
@@ -1316,44 +1393,36 @@ const GameOfLifeCanvas = () => {
             }
         }
 
-         // 2. Draw Propagating Signals (Overlay)
-         context.globalAlpha = 1.0;
-         tendrilsRef.current.forEach(tendril => {
-             if (tendril.signalState === 'propagating' && tendril.signalPosition >= 0 && tendril.signalPosition < tendril.path.length) {
-                 // Make signal more visible by drawing multiple cells (pulse head + tail)
-                 const signalCoord = tendril.path[tendril.signalPosition];
+        // 2. Draw Propagating Signals (Overlay) - Enhanced for visibility
+        context.globalAlpha = 1.0;
+        tendrilsRef.current.forEach(tendril => {
+            if (tendril.signalState === 'propagating' && tendril.signalPosition >= 0 && tendril.signalPosition < tendril.path.length) {
+                // Make signal more visible by drawing multiple cells (pulse head + tail)
+                const signalCoord = tendril.path[tendril.signalPosition];
 
-                 // Draw the signal at current position
-                 if (isWithinBounds(signalCoord.x, signalCoord.y)) {
-                     context.fillStyle = SIGNAL_COLOR; // White signal color
-                     context.globalAlpha = tendril.opacity * 1.0; // Full brightness for head
-                     context.fillRect(signalCoord.x * CELL_SIZE, signalCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                // Draw the signal at current position with enhanced brightness
+                if (isWithinBounds(signalCoord.x, signalCoord.y)) {
+                    context.fillStyle = SIGNAL_COLOR; // White signal color
+                    context.globalAlpha = Math.min(1.0, tendril.opacity * PULSE_VISIBILITY); // Brighter for better visibility
+                    context.fillRect(signalCoord.x * CELL_SIZE, signalCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
 
-                     // Draw signal "tail" (1-2 cells behind the current position)
-                     // Only if we're not at the start of the path
-                     if (tendril.signalPosition > 0) {
-                         // Draw one cell behind at 70% opacity
-                         const tailPos1 = Math.max(0, tendril.signalPosition - 1);
-                         const tailCoord1 = tendril.path[tailPos1];
-                         if (isWithinBounds(tailCoord1.x, tailCoord1.y)) {
-                             context.globalAlpha = tendril.opacity * 0.7; // Dimmer for tail
-                             context.fillRect(tailCoord1.x * CELL_SIZE, tailCoord1.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                         }
+                    // Draw signal "tail" with more cells for improved visibility
+                    // Draw up to 4 cells behind the signal for a longer tail
+                    let tailLength = Math.min(4, tendril.signalPosition);
 
-                         // Draw two cells behind at 40% opacity
-                         if (tendril.signalPosition > 1) {
-                             const tailPos2 = Math.max(0, tendril.signalPosition - 2);
-                             const tailCoord2 = tendril.path[tailPos2];
-                             if (isWithinBounds(tailCoord2.x, tailCoord2.y)) {
-                                 context.globalAlpha = tendril.opacity * 0.4; // Even dimmer for end of tail
-                                 context.fillRect(tailCoord2.x * CELL_SIZE, tailCoord2.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                             }
-                         }
-                     }
-                 }
-             }
-         });
-         context.globalAlpha = 1.0; // Reset global alpha
+                    for (let i = 1; i <= tailLength; i++) {
+                        const tailPos = tendril.signalPosition - i;
+                        const tailCoord = tendril.path[tailPos];
+                        if (isWithinBounds(tailCoord.x, tailCoord.y)) {
+                            // Decrease opacity gradually for tail effect (0.8, 0.6, 0.4, 0.2)
+                            context.globalAlpha = Math.min(1.0, tendril.opacity * PULSE_VISIBILITY * (1 - i * 0.2));
+                            context.fillRect(tailCoord.x * CELL_SIZE, tailCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                        }
+                    }
+                }
+            }
+        });
+        context.globalAlpha = 1.0; // Reset global alpha
     };
 
   // --- Initialization and Cleanup ---
