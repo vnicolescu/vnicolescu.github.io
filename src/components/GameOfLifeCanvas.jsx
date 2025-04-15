@@ -10,13 +10,14 @@ const DEFAULT_PULSE_ADVANCE_INTERVAL = 1;
 const DEFAULT_PULSE_SPEED_FACTOR = 5;
 const MAX_PULSE_SPEED_FACTOR = 50;
 const DEFAULT_BRANCH_CHANCE = 0.15;
-const DEFAULT_FADE_SPEED = 0.01;
+const DEFAULT_FADE_SPEED = 0.005; // *** DRASTICALLY REDUCED fade speed ***
 const FLASH_DURATION_FRAMES = 15;
 const MAX_BRANCH_ATTEMPTS = 20;
 const SOURCE_REGENERATION_DELAY = 60;
 const MIN_PATH_LENGTH_FOR_BRANCHING = 3;
 const ADJACENCY_PENALTY_RADIUS_MAIN = 1;
 const ADJACENCY_PENALTY_RADIUS_BRANCH = 0;
+const BRANCH_ADJACENCY_IMMUNITY_STEPS = 5; // Branch ignores adjacency for first 5 steps
 
 // Colors (using your palette)
 const SOURCE_COLOR = '#6366F1'; // Indigo Flame from palette
@@ -726,9 +727,16 @@ const GameOfLifeCanvas = () => {
 
     // Completely overhauled adjacency check function to be much more lenient
     const checkAdjacencyPenalty = (tendril, neighbor, currentHead, previousCell) => {
-      // If this is a branch or regenerated tendril, adjacency penalties are significantly reduced
+      // If this is a branch or regenerated tendril, apply special rules
       if (tendril.isBranch || tendril.isRegenerated) {
-        // For branches, only check immediate self-overlap
+        // Check if the branch is still in its immunity phase
+        const age = frameCountRef.current - (tendril.creation || 0);
+        if (tendril.isBranch && age < BRANCH_ADJACENCY_IMMUNITY_STEPS) {
+          // Within immunity period, no adjacency penalty
+          return false;
+        }
+
+        // After immunity, only check immediate self-overlap
         const isSelfOverlap = tendril.path.some(p => p.x === neighbor.x && p.y === neighbor.y);
         return isSelfOverlap;
       }
@@ -814,10 +822,31 @@ const GameOfLifeCanvas = () => {
       let attempts = 0;
       let branchCreated = false;
 
+      // Get parent direction for penalizing similar branch directions
+      const parentDirection = getLastMoveDirection(tendril);
+
       while (!branchCreated && attempts < Math.min(MAX_BRANCH_ATTEMPTS, potentialBranchTargets.length)) {
         const targetOption = potentialBranchTargets[attempts];
         const branchTarget = targetOption.item;
+        let targetWeight = targetOption.weight;
         attempts++;
+
+        // Calculate direction of this potential branch target
+        const targetDx = Math.sign(branchTarget.x - currentHead.x);
+        const targetDy = Math.sign(branchTarget.y - currentHead.y);
+
+        // PENALIZE BRANCHES TOO SIMILAR TO PARENT DIRECTION
+        const isSimilarDirection =
+            (targetDx === parentDirection.dx && targetDy === parentDirection.dy) || // Same direction
+            (Math.abs(targetDx - parentDirection.dx) <= 1 && Math.abs(targetDy - parentDirection.dy) <= 1); // Very close direction
+
+        if (isSimilarDirection && tendril.path.length > MIN_PATH_LENGTH_FOR_BRANCHING + 2) { // Only penalize after initial growth
+            targetWeight *= 0.3; // Significantly reduce weight if direction is too similar
+            console.log(`Branch target (${branchTarget.x},${branchTarget.y}) direction too similar to parent, reducing weight.`);
+            // Re-sort targets if weights changed significantly (optional, might add overhead)
+            // potentialBranchTargets.sort((a, b) => b.weight - a.weight);
+            if (targetWeight < 0.1) continue; // Skip very low weight targets
+        }
 
         // Check if this branch target has enough empty space around it
         // to be a viable branch (to avoid creating dead ends)
@@ -1143,10 +1172,13 @@ const GameOfLifeCanvas = () => {
              // Only apply fading to tendrils explicitly marked for fading
              // or in terminal states like blocked or collided
              if (tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
-                // FIXED: Prevent too-fast fading of branch points by applying a smaller fade factor
-                // This ensures branch points remain visible longer
-                const fadeFactor = tendril.path.length > 5 ? currentFadeSpeed : currentFadeSpeed * 0.5;
-                tendril.opacity -= fadeFactor;
+                 // FIXED: Make fading much slower, especially for branches
+                 let effectiveFadeSpeed = currentFadeSpeed;
+                 if (tendril.isBranch) {
+                     effectiveFadeSpeed *= 0.5; // Branches fade even slower
+                 }
+
+                 tendril.opacity -= effectiveFadeSpeed;
 
                 if (tendril.opacity <= 0) {
                     console.log(`Tendril ${tendril.id} faded completely. Removing.`);
@@ -1170,7 +1202,7 @@ const GameOfLifeCanvas = () => {
                                 });
                             } else {
                                 // For branch points, just remove this tendril's ID from the list
-                                const tendrilIds = currentCell.tendrilId.split(',').filter(id => id !== tendril.id);
+                                const tendrilIds = (currentCell.tendrilId || '').split(',').filter(id => id !== tendril.id);
                                 if (tendrilIds.length > 0) {
                                     gridUpdates.set(cellKey, {
                                         ...currentCell,
@@ -1183,19 +1215,40 @@ const GameOfLifeCanvas = () => {
                                         color: BACKGROUND_COLOR,
                                         tendrilId: null,
                                         sourceId: null,
-                                        connectionId: null
+                                        connectionId: null,
+                                        isBranchPoint: false // Clear the flag
                                     });
                                 }
                             }
                         }
                     });
                 } else {
-                     // Update color on grid to indicate fading
+                     // Update color on grid to indicate fading (Make it more subtle)
                      tendril.path.forEach(p => {
                          const cellKey = `${p.y}-${p.x}`;
                          const currentCell = gridRef.current[p.y]?.[p.x];
-                        if (currentCell && currentCell.tendrilId === tendril.id && currentCell.type === 'tendril') {
-                             gridUpdates.set(cellKey, { ...currentCell, color: FADING_COLOR });
+                        // Check if the cell still belongs to this fading tendril
+                        const cellTendrilIds = currentCell?.tendrilId ? currentCell.tendrilId.split(',') : [];
+                        if (currentCell && cellTendrilIds.includes(tendril.id) && currentCell.type === 'tendril' && !currentCell.isBranchPoint) {
+                            // Interpolate color towards background based on opacity
+                            const baseColor = parseInt(TENDRIL_COLOR.slice(1), 16);
+                            const bgColor = parseInt(BACKGROUND_COLOR.slice(1), 16);
+
+                            const baseR = (baseColor >> 16) & 255;
+                            const baseG = (baseColor >> 8) & 255;
+                            const baseB = baseColor & 255;
+
+                            const bgR = (bgColor >> 16) & 255;
+                            const bgG = (bgColor >> 8) & 255;
+                            const bgB = bgColor & 255;
+
+                            const r = Math.round(baseR * tendril.opacity + bgR * (1 - tendril.opacity));
+                            const g = Math.round(baseG * tendril.opacity + bgG * (1 - tendril.opacity));
+                            const b = Math.round(baseB * tendril.opacity + bgB * (1 - tendril.opacity));
+
+                            const fadedColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0')}`;
+
+                            gridUpdates.set(cellKey, { ...currentCell, color: fadedColor });
                         }
                      });
                 }
