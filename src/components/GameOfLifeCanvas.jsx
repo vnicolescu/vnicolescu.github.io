@@ -503,8 +503,7 @@ const GameOfLifeCanvas = () => {
             // Advance position by calculated steps
             const oldPosition = pulse.position;
             pulse.position += stepsToAdvance;
-            if (tendril.isBranch) console.log(`   -> Advanced pulse ${pulse.id} from ${oldPosition} to ${pulse.position}`);
-            console.log(`DEBUG: Pulse ${pulse.id} advanced from ${oldPosition} to ${pulse.position} (tendril length: ${tendril.path.length})`);
+            // console.log(`DEBUG: Pulse ${pulse.id} advanced from ${oldPosition} to ${pulse.position} (tendril length: ${tendril.path.length})`); // Reduce noise
 
             // --- Check Pulse Position ---
             // Check if pulse reached or passed the end of the current path
@@ -514,28 +513,29 @@ const GameOfLifeCanvas = () => {
             if (pulse.position >= endPositionIndex) {
                 // Pulse is at or beyond the last known cell
                 if (tendril.state === 'growing') {
-                    // If the tendril is still growing, trigger growth attempt
+                    // *** CLAMPING FIX ***
+                    // Clamp pulse position to the current end index *before* triggering growth
+                    pulse.position = endPositionIndex;
+                    console.log(`   -> Pulse ${pulse.id} reached end (pos ${oldPosition} -> ${pulse.position}), CLAMPED to endIdx ${endPositionIndex}. Triggering growth.`);
+
                     growthTendrils.add(tendril.id);
                     growthTriggered++;
-                    console.log(`DEBUG: Pulse ${pulse.id} triggered growth for tendril ${tendril.id}`);
-                    // **Don't remove yet! Let tryGrowTendril run first.**
                 } else {
-                    // Tendril is not growing (connected, fading, etc.) - remove pulse if at/past end
+                    // Tendril is not growing - mark for removal if at/past end
                     console.log(`DEBUG: Pulse ${pulse.id} reached end of non-growing tendril ${tendril.id}, marking for removal`);
                     shouldRemovePulse = true;
                 }
 
-                // Check *after* potential growth if the pulse is truly off the end
-                // This condition will be re-evaluated after tryGrowTendril potentially extends the path
-                if (pulse.position >= tendril.path.length) {
-                    console.log(`DEBUG: Pulse ${pulse.id} is past end of tendril ${tendril.id} (pos ${pulse.position} >= len ${tendril.path.length}), marking for removal`);
-                    shouldRemovePulse = true;
-                }
+                // // Old Check - Removing. Logic moved to final check.
+                // if (pulse.position >= tendril.path.length) {
+                //     console.log(`DEBUG: Pulse ${pulse.id} is past end of tendril ${tendril.id} (pos ${pulse.position} >= len ${tendril.path.length}), marking for removal`);
+                //     shouldRemovePulse = true;
+                // }
 
             } // else: Pulse is still travelling along the path, do nothing extra
 
-            if (shouldRemovePulse) {
-                pulsesToRemove.push(index);
+            if (shouldRemovePulse && !pulsesToRemove.includes(index)) {
+                 pulsesToRemove.push(index); // Mark for potential removal (e.g., if tendril not growing)
             }
         });
 
@@ -569,34 +569,29 @@ const GameOfLifeCanvas = () => {
         const finalPulsesToRemove = [];
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
-
-            // Default: Don't remove unless a condition is met
-            let removeThisPulse = false;
+            let removeThisPulse = pulsesToRemove.includes(index); // Start with pulses already marked (e.g., non-growing)
 
             if (!tendril) {
-                removeThisPulse = true; // Remove pulse if tendril doesn't exist
-            } else if (tendril.state !== 'growing' && tendril.state !== 'connected') {
-                removeThisPulse = true; // Remove pulse if tendril is inactive
-                if (tendril.isBranch) console.log(`Final Check: Removing pulse ${pulse.id} for inactive branch ${tendril.id}`);
-            } else {
-                // Tendril is active (growing or connected)
-                const endPositionIndex = tendril.path.length - 1;
-
-                // Condition 1: Pulse has moved strictly *past* the end of the path
-                if (pulse.position > endPositionIndex) {
-                    console.log(`DEBUG: Pulse ${pulse.id} is confirmed past end of tendril ${tendril.id} after growth check (pos ${pulse.position} > endIdx ${endPositionIndex}), removing.`);
-                    removeThisPulse = true;
-                }
-                // Condition 2: Pulse is exactly at the end *AND* growth failed (or wasn't triggered)
-                else if (pulse.position === endPositionIndex) {
-                    const growthResult = growthResults.get(pulse.tendrilId);
-                    // Remove if growth was triggered but failed, OR if tendril isn't growing anymore
-                    if ((growthResult && !growthResult.pathExtended) || tendril.state !== 'growing') {
-                        console.log(`DEBUG: Pulse ${pulse.id} at end of tendril ${tendril.id}, but growth failed or tendril stopped. Removing pulse.`);
+                removeThisPulse = true; // Remove pulse if tendril doesn't exist anymore
+            } else if (tendril.state === 'growing') {
+                 // Only evaluate removal for growing tendrils if they weren't already marked
+                 if (!removeThisPulse) {
+                    const endPositionIndex = tendril.path.length - 1;
+                    // Condition 1: Pulse has moved strictly *past* the end of the path (after growth)
+                    if (pulse.position > endPositionIndex) {
+                        console.log(`Final Check: Pulse ${pulse.id} is past end of tendril ${tendril.id} (pos ${pulse.position} > endIdx ${endPositionIndex}), removing.`);
                         removeThisPulse = true;
                     }
-                    // *** Otherwise (pulse at end, growth succeeded or wasn't triggered on non-growing), KEEP the pulse ***
-                }
+                    // Condition 2: Pulse is exactly at the end *AND* growth failed
+                    else if (pulse.position === endPositionIndex) {
+                        const growthResult = growthResults.get(pulse.tendrilId);
+                        if (growthResult && !growthResult.pathExtended) {
+                            console.log(`Final Check: Pulse ${pulse.id} at end of tendril ${tendril.id}, but growth failed. Removing pulse.`);
+                            removeThisPulse = true;
+                        }
+                        // *** If pulse is at end and growth SUCCEEDED, removeThisPulse remains false ***
+                    }
+                 }
             }
 
             if (removeThisPulse && !finalPulsesToRemove.includes(index)) {
