@@ -424,7 +424,7 @@ const GameOfLifeCanvas = () => {
 
     // *** MODIFIED: Advance Pulses (incorporates speed factor directly) ***
     const advancePulses = () => {
-        console.log(`DEBUG: advancePulses called, processing ${pulsesRef.current.length} pulses`);
+        // console.log(`DEBUG: advancePulses called, processing ${pulsesRef.current.length} pulses`); // Reduce noise
         let growthTriggered = 0;
 
         const pulsesToRemove = [];
@@ -436,13 +436,19 @@ const GameOfLifeCanvas = () => {
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
             if (!tendril) {
-                console.log(`DEBUG: Pulse ${pulse.id} has no matching tendril ${pulse.tendrilId}, removing`);
+                // console.log(`DEBUG: Pulse ${pulse.id} has no matching tendril ${pulse.tendrilId}, removing`); // Reduce noise
                 pulsesToRemove.push(index);
                 return;
             }
 
+            // *** BRANCH DEBUG LOG: Log pulse processing for branches ***
+            if (tendril.isBranch) {
+                console.log(`--[Branch Pulse ${pulse.id} for Tendril ${tendril.id}]-- State: ${tendril.state}, Pos: ${pulse.position}, PathLen: ${tendril.path.length}`);
+            }
+
             if (tendril.state !== 'growing' && tendril.state !== 'connected') {
-                console.log(`DEBUG: Tendril ${tendril.id} state=${tendril.state}, removing pulse`);
+                if (tendril.isBranch) console.log(`   -> Branch ${tendril.id} not growing/connected, removing pulse.`);
+                // console.log(`DEBUG: Tendril ${tendril.id} state=${tendril.state}, removing pulse`); // Reduce noise
                 pulsesToRemove.push(index);
                 return;
             }
@@ -497,11 +503,13 @@ const GameOfLifeCanvas = () => {
             // Advance position by calculated steps
             const oldPosition = pulse.position;
             pulse.position += stepsToAdvance;
+            if (tendril.isBranch) console.log(`   -> Advanced pulse ${pulse.id} from ${oldPosition} to ${pulse.position}`);
             console.log(`DEBUG: Pulse ${pulse.id} advanced from ${oldPosition} to ${pulse.position} (tendril length: ${tendril.path.length})`);
 
             // --- Check Pulse Position ---
             // Check if pulse reached or passed the end of the current path
             const endPositionIndex = tendril.path.length - 1;
+            let shouldRemovePulse = false;
 
             if (pulse.position >= endPositionIndex) {
                 // Pulse is at or beyond the last known cell
@@ -510,44 +518,90 @@ const GameOfLifeCanvas = () => {
                     growthTendrils.add(tendril.id);
                     growthTriggered++;
                     console.log(`DEBUG: Pulse ${pulse.id} triggered growth for tendril ${tendril.id}`);
-                    // Don't remove the pulse yet, let tryGrowTendril extend the path
+                    // **Don't remove yet! Let tryGrowTendril run first.**
+                } else {
+                    // Tendril is not growing (connected, fading, etc.) - remove pulse if at/past end
+                    console.log(`DEBUG: Pulse ${pulse.id} reached end of non-growing tendril ${tendril.id}, marking for removal`);
+                    shouldRemovePulse = true;
                 }
-                 // If pulse has gone *past* the valid end index, remove it
-                 if (pulse.position >= tendril.path.length) {
-                    console.log(`DEBUG: Pulse ${pulse.id} went past end of tendril ${tendril.id}, removing`);
-                pulsesToRemove.push(index);
+
+                // Check *after* potential growth if the pulse is truly off the end
+                // This condition will be re-evaluated after tryGrowTendril potentially extends the path
+                if (pulse.position >= tendril.path.length) {
+                    console.log(`DEBUG: Pulse ${pulse.id} is past end of tendril ${tendril.id} (pos ${pulse.position} >= len ${tendril.path.length}), marking for removal`);
+                    shouldRemovePulse = true;
                 }
-                 // If tendril is NOT growing and pulse reached end, remove it.
-                 else if (tendril.state !== 'growing') {
-                     console.log(`DEBUG: Pulse ${pulse.id} reached end of non-growing tendril ${tendril.id}, removing`);
-                pulsesToRemove.push(index);
-            }
-                 // Otherwise, if tendril is growing and pulse is exactly at the end, keep it for now.
 
             } // else: Pulse is still travelling along the path, do nothing extra
+
+            if (shouldRemovePulse) {
+                pulsesToRemove.push(index);
+            }
         });
 
-        // Remove pulses
-        for (let i = pulsesToRemove.length - 1; i >= 0; i--) {
-            pulsesRef.current.splice(pulsesToRemove[i], 1);
-        }
+        // Remove pulses *before* triggering growth to avoid race conditions?
+        // NO - Removing before growth means the growth trigger is lost if pulse is removed.
+        // for (let i = pulsesToRemove.length - 1; i >= 0; i--) {
+        //     pulsesRef.current.splice(pulsesToRemove[i], 1);
+        // }
 
-        console.log(`DEBUG: Removed ${pulsesToRemove.length} pulses, ${pulsesRef.current.length} remain`);
-        console.log(`DEBUG: Growth triggered for ${growthTriggered} tendrils`);
+        // console.log(`DEBUG: Marked ${pulsesToRemove.length} pulses for removal`); // DEBUG
+        // console.log(`DEBUG: Growth triggered for ${growthTriggered} tendrils`); // Reduce noise
 
         // Trigger growth for each tendril that needs it
+        const growthResults = new Map(); // Store results: { pathExtended: boolean }
         if (growthTendrils.size > 0) {
             console.log(`DEBUG: Attempting growth for ${growthTendrils.size} tendrils`);
-        growthTendrils.forEach(tendrilId => {
-            const tendril = findTendrilById(tendrilId);
-            if (tendril) {
+            growthTendrils.forEach(tendrilId => {
+                const tendril = findTendrilById(tendrilId);
+                if (tendril) {
                     const oldLength = tendril.path.length;
-                tryGrowTendril(tendril);
+                    safeExecute(tryGrowTendril, tendril);
                     const newLength = tendril.path.length;
-                    console.log(`DEBUG: Tendril ${tendrilId} growth: ${oldLength} cells → ${newLength} cells (${newLength - oldLength} growth)`);
+                    const pathExtended = newLength > oldLength;
+                    growthResults.set(tendrilId, { pathExtended }); // Store result
+                    if (tendril.isBranch) console.log(`   -> Branch ${tendrilId} growth result: ${oldLength} -> ${newLength} cells`);
                 }
             });
         }
+
+        // **Now re-evaluate pulse removal based on growth results**
+        const finalPulsesToRemove = [];
+        pulsesRef.current.forEach((pulse, index) => {
+            // Check if this pulse was marked for potential removal earlier
+            const wasMarkedForRemoval = pulsesToRemove.includes(index);
+            let removeThisPulse = wasMarkedForRemoval;
+
+            const tendril = findTendrilById(pulse.tendrilId);
+            if (tendril && tendril.state === 'growing' && pulse.position >= tendril.path.length - 1) {
+                // Re-check if pulse is off the end *after* growth attempt
+                if (pulse.position >= tendril.path.length) {
+                   console.log(`DEBUG: Pulse ${pulse.id} is confirmed past end of tendril ${tendril.id} after growth check, removing.`);
+                   removeThisPulse = true;
+                } else {
+                    // Pulse triggered growth, but growth failed to extend path? Or pulse simply reached the new end?
+                    const growthResult = growthResults.get(pulse.tendrilId);
+                    if (growthResult && !growthResult.pathExtended) {
+                        console.log(`DEBUG: Pulse ${pulse.id} triggered growth for ${pulse.tendrilId}, but path did not extend. Removing pulse.`);
+                        removeThisPulse = true;
+                    } else {
+                         // Path extended or pulse just reached the new end - keep it
+                         removeThisPulse = false;
+                    }
+                }
+            }
+
+            if (removeThisPulse && !finalPulsesToRemove.includes(index)) {
+                finalPulsesToRemove.push(index);
+            }
+        });
+
+        // Final removal
+        console.log(`DEBUG: Final check removing ${finalPulsesToRemove.length} pulses.`);
+        for (let i = finalPulsesToRemove.length - 1; i >= 0; i--) {
+            pulsesRef.current.splice(finalPulsesToRemove[i], 1);
+        }
+
     };
 
     // --- Verification of path integrity from source ---
@@ -592,11 +646,12 @@ const GameOfLifeCanvas = () => {
     // Helper to verify tendril is connected to its source
     const verifyTendrilConnectivity = (tendril, source) => {
       // If the path is empty, it's not connected
-      if (!tendril.path.length) return false;
+      if (!tendril.path || tendril.path.length === 0) return false;
 
-      // First cell should be at source position
+      // First cell should be at source position (unless it's a branch starting later)
       const firstCell = tendril.path[0];
-      if (firstCell.x !== source.x || firstCell.y !== source.y) {
+      if (!tendril.isBranch && (firstCell.x !== source.x || firstCell.y !== source.y)) {
+        console.log(`Tendril ${tendril.id}: First cell (${firstCell.x},${firstCell.y}) doesn't match source (${source.x},${source.y})`);
         return false;
       }
 
@@ -611,17 +666,34 @@ const GameOfLifeCanvas = () => {
 
         // If cells aren't adjacent, path is broken
         if (dx > 1 || dy > 1) {
+          console.log(`Tendril ${tendril.id}: Path broken between cell ${i-1} and ${i}`);
           return false;
         }
 
-        // Check that the cell at this position in the grid belongs to this tendril
+        // Check that the cell at this position in the grid belongs to this tendril or is the source
         const gridCell = gridRef.current[currCell.y]?.[currCell.x];
-        if (!gridCell) return false;
+        if (!gridCell) {
+            console.log(`Tendril ${tendril.id}: Grid cell missing at (${currCell.x},${currCell.y})`);
+            return false;
+        }
+
+        // If it's the source cell, it's fine
+        if (gridCell.type === 'source' && gridCell.sourceId === tendril.sourceId) continue;
+
+        // If it's a connection, that's also fine (path can go through connections)
+        if (gridCell.type === 'connection') continue;
+
+        // If it's not a tendril cell, it's broken
+        if (gridCell.type !== 'tendril') {
+            console.log(`Tendril ${tendril.id}: Grid cell at (${currCell.x},${currCell.y}) is not tendril type (${gridCell.type})`);
+            return false;
+        }
 
         // The cell might be a branch point (shared), so we need to check if tendril ID is in the comma-separated list
         const cellTendrilIds = gridCell.tendrilId ? gridCell.tendrilId.split(',') : [];
         if (!cellTendrilIds.includes(tendril.id)) {
-          return false;
+            console.log(`Tendril ${tendril.id}: ID not found in grid cell (${currCell.x},${currCell.y}) which has IDs [${cellTendrilIds.join(',')}]`);
+            return false;
         }
       }
 
@@ -733,11 +805,17 @@ const GameOfLifeCanvas = () => {
         const age = frameCountRef.current - (tendril.creation || 0);
         if (tendril.isBranch && age < BRANCH_ADJACENCY_IMMUNITY_STEPS) {
           // Within immunity period, no adjacency penalty
+          // console.log(`   -> Branch ${tendril.id} (Age ${age}) in immunity period, skipping adjacency.`); // Reduce noise
           return false;
         }
 
         // After immunity, only check immediate self-overlap
         const isSelfOverlap = tendril.path.some(p => p.x === neighbor.x && p.y === neighbor.y);
+        if (isSelfOverlap) {
+           console.log(`   -> Branch ${tendril.id} (Age ${age}) blocked by self-overlap at (${neighbor.x}, ${neighbor.y}).`);
+        } else {
+          // console.log(`   -> Branch ${tendril.id} (Age ${age}) passed post-immunity overlap check.`); // Reduce noise
+        }
         return isSelfOverlap;
       }
 
