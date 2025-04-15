@@ -237,25 +237,27 @@ const GameOfLifeCanvas = () => {
     for (const [dx, dy] of directions) {
         const nx = x + dx;
         const ny = y + dy;
-        if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight) {
-            const cell = gridRef.current[ny]?.[nx];
-            if (!cell) continue;
 
-            if (cell.type === 'empty') {
-                neighbors.empty.push({ x: nx, y: ny });
-            } else if (cell.type === 'tendril' || cell.type === 'source') {
-                if (cell.sourceId === currentSourceId) {
-                    // Collision with self - check if it's the immediate predecessor later
-                    neighbors.selfCollision.push({ x: nx, y: ny });
-                } else {
-                    // Collision with other source
-                    const existingConnection = connectionsRef.current.some(conn =>
-                        (conn.sourceId1 === currentSourceId && conn.sourceId2 === cell.sourceId) ||
-                        (conn.sourceId1 === cell.sourceId && conn.sourceId2 === currentSourceId)
-                    );
-                    if (!existingConnection) {
-                        neighbors.collision.push({ x: nx, y: ny, otherSourceId: cell.sourceId, otherTendrilId: cell.tendrilId });
-                    }
+        // CRITICAL: Strict boundary check - skip if out of bounds
+        if (!isWithinBounds(nx, ny)) continue;
+
+        const cell = gridRef.current[ny]?.[nx];
+        if (!cell) continue;
+
+        if (cell.type === 'empty') {
+            neighbors.empty.push({ x: nx, y: ny });
+        } else if (cell.type === 'tendril' || cell.type === 'source') {
+            if (cell.sourceId === currentSourceId) {
+                // Collision with self - check if it's the immediate predecessor later
+                neighbors.selfCollision.push({ x: nx, y: ny });
+            } else {
+                // Collision with other source
+                const existingConnection = connectionsRef.current.some(conn =>
+                    (conn.sourceId1 === currentSourceId && conn.sourceId2 === cell.sourceId) ||
+                    (conn.sourceId1 === cell.sourceId && conn.sourceId2 === currentSourceId)
+                );
+                if (!existingConnection) {
+                    neighbors.collision.push({ x: nx, y: ny, otherSourceId: cell.sourceId, otherTendrilId: cell.tendrilId });
                 }
             }
         }
@@ -330,6 +332,11 @@ const GameOfLifeCanvas = () => {
 
     // Function to find a tendril object by its ID
     const findTendrilById = (id) => tendrilsRef.current.find(t => t.id === id);
+
+    // CRITICAL SAFETY: Check if a coordinate is within the grid boundaries
+    const isWithinBounds = (x, y) => {
+        return x >= 0 && x < gridWidth && y >= 0 && y < gridHeight;
+    };
 
     // *** NEW: Spawn Pulses Periodically ***
     const spawnPulses = () => {
@@ -456,11 +463,21 @@ const GameOfLifeCanvas = () => {
         let currentHead = tendril.path[tendril.path.length - 1];
         let previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
         const currentWeights = simParamsRef.current.directionWeights;
+        // Track growth success
+        let hasGrown = false;
 
         if (!currentHead) {
-             // ... (handle missing head)
              return;
-         }
+        }
+
+        // CRITICAL SAFETY: Check if current head is at grid boundary
+        // If so, block the tendril from growing further
+        if (currentHead.x <= 0 || currentHead.x >= gridWidth-1 ||
+            currentHead.y <= 0 || currentHead.y >= gridHeight-1) {
+            console.log(`Tendril ${tendril.id} reached boundary at (${currentHead.x},${currentHead.y}). Marking as blocked.`);
+            tendril.state = 'blocked';
+            return;
+        }
 
         const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
 
@@ -669,6 +686,13 @@ const GameOfLifeCanvas = () => {
             return;
         }
 
+        // CRITICAL SAFETY: Extra boundary check before moving (redundant but safe)
+        if (!isWithinBounds(nextCell.x, nextCell.y)) {
+            console.warn(`Tendril ${tendril.id} attempted to move out of bounds to (${nextCell.x},${nextCell.y}). Blocking.`);
+            tendril.state = 'blocked';
+            return;
+        }
+
         // --- Branching Logic (Uses Weighted Selection) ---
         const currentBranchChance = simParamsRef.current.branchChance;
         const randomValue = Math.random();
@@ -779,8 +803,6 @@ const GameOfLifeCanvas = () => {
         }
 
         // Move to the chosen next cell
-        let hasGrown = false;
-
         // Only proceed if a valid next cell was chosen
         if (nextCell) {
             currentHead = nextCell;
@@ -1082,6 +1104,18 @@ const GameOfLifeCanvas = () => {
     const render = () => {
         if (!canvasRef.current) return;
         frameCountRef.current++;
+
+        // SAFETY CHECK: Tendril count check (prevent browser crash due to excessive tendrils)
+        const currentTendrilCount = tendrilsRef.current.length;
+        if (currentTendrilCount > 1000) {
+            console.warn(`Tendril count (${currentTendrilCount}) exceeds safety limit. Fading all non-essential tendrils.`);
+            tendrilsRef.current.forEach(tendril => {
+                // Mark non-source tendrils as fading to reduce the active count
+                if (tendril.state === 'growing' && tendril.path.length > 10) {
+                    tendril.state = 'fading';
+                }
+            });
+        }
 
         const { pulseGenerationInterval: currentGenInterval } = simParamsRef.current;
 
