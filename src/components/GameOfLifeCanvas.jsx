@@ -51,6 +51,34 @@ let tendrilCounter = 0;
 const getUniqueTendrilId = (sourceId) => `t-${sourceId}-${tendrilCounter++}`;
 const getRandomInt = (max) => Math.floor(Math.random() * max);
 
+// --- LocalStorage Helpers ---
+const STORAGE_KEY = 'gameOfLifeSettings';
+
+const loadSettingsFromLocalStorage = () => {
+  try {
+    const storedSettings = localStorage.getItem(STORAGE_KEY);
+    if (storedSettings) {
+      const parsed = JSON.parse(storedSettings);
+      // Add validation/migration logic here if settings structure changes
+      console.log("Loaded settings from localStorage:", parsed);
+      return parsed;
+    }
+  } catch (error) {
+    console.error("Error loading settings from localStorage:", error);
+  }
+  console.log("No valid settings found in localStorage, using defaults.");
+  return null; // Return null if nothing valid found
+};
+
+const saveSettingsToLocalStorage = (settings) => {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    // console.log("Saved settings to localStorage:", settings); // Optional: log saving
+  } catch (error) {
+    console.error("Error saving settings to localStorage:", error);
+  }
+};
+
 const getDirectionIndex = (dx, dy) => {
     const normDx = Math.sign(dx);
     const normDy = Math.sign(dy);
@@ -110,22 +138,27 @@ const GameOfLifeCanvas = () => {
   const connectionsRef = useRef([]);
   const frameCountRef = useRef(0);
   const animationFrameIdRef = useRef(null);
+  const lastSignalEmitTimeRef = useRef(0); // Add ref for time tracking
+  const currentTimeRef = useRef(0); // Add ref for current frame time
   const [error, setError] = useState(null);
   const gridDimensions = useRef({ width: 0, height: 0 });
 
-  // --- State for Simulation Parameters ---
-  const [signalInterval, setSignalInterval] = useState(DEFAULT_SIGNAL_INTERVAL);
-  const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
-  const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // Default weights prioritize Forward, then Forward-Diagonals, then Sides
-  const [directionWeights, setDirectionWeights] = useState([0.8, 2.5, 0.8, 0.3, 0, 0.3, 0.1, 0.1, 0.1]); // Index 4 is center
+  // --- State for Simulation Parameters (with localStorage loading) ---
+  const initialSettings = loadSettingsFromLocalStorage();
+
+  const [signalFrequency, setSignalFrequency] = useState(initialSettings?.signalFrequency ?? 1.0); // Default 1 Hz
+  const [branchChance, setBranchChance] = useState(initialSettings?.branchChance ?? 0.1); // 10% default
+  const [fadeSpeed, setFadeSpeed] = useState(initialSettings?.fadeSpeed ?? DEFAULT_FADE_SPEED);
+  const [directionWeights, setDirectionWeights] = useState(initialSettings?.directionWeights ?? [0.8, 2.5, 0.8, 0.3, 0, 0.3, 0.1, 0.1, 0.1]);
   const sourceStatesRef = useRef({}); // Tracks regeneration status
 
   // Ref for current simulation parameters
-  const simParamsRef = useRef({ signalInterval, branchChance, fadeSpeed, directionWeights });
+  const simParamsRef = useRef({ signalFrequency, branchChance, fadeSpeed, directionWeights }); // Use frequency
   useEffect(() => {
-    simParamsRef.current = { signalInterval, branchChance, fadeSpeed, directionWeights };
-  }, [signalInterval, branchChance, fadeSpeed, directionWeights]);
+    const currentSettings = { signalFrequency, branchChance, fadeSpeed, directionWeights };
+    simParamsRef.current = currentSettings; // Use frequency
+    saveSettingsToLocalStorage(currentSettings); // Save on change
+  }, [signalFrequency, branchChance, fadeSpeed, directionWeights]); // Update dependencies
 
   // --- Core Simulation Logic ---
 
@@ -357,6 +390,7 @@ const GameOfLifeCanvas = () => {
             // Apply adjacency penalty
             if (weight > 0 && checkAdjacencyPenalty(tendril, neighbor, currentHead, previousCell)) {
                 weight = 0;
+                console.log(`Frame ${frameCountRef.current}: Tendril ${tendril.id} - Adjacency penalty applied to neighbor (${neighbor.x},${neighbor.y}).`);
             }
 
             return { item: neighbor, weight: weight };
@@ -364,18 +398,22 @@ const GameOfLifeCanvas = () => {
 
 
         if (weightedNeighbors.length === 0) {
+            console.log(`     -> Tendril ${tendril.id} blocked (no valid weighted neighbors).`);
             tendril.state = 'blocked';
             return; // Blocked
         }
 
         const nextCell = weightedRandomSelect(weightedNeighbors);
+        // console.log(`     -> Selected next cell:`, nextCell);
         if (!nextCell) {
+            console.log(`     -> Tendril ${tendril.id} blocked (weighted selection failed).`);
             tendril.state = 'blocked';
             return; // Selection failed
         }
 
         // Check boundary for nextCell
         if (!isWithinBounds(nextCell.x, nextCell.y)) {
+             console.log(`     -> Tendril ${tendril.id} blocked (next cell out of bounds).`);
              tendril.state = 'blocked';
              return;
         }
@@ -615,28 +653,87 @@ const GameOfLifeCanvas = () => {
   const fadeTendrils = () => {
       const currentFadeSpeed = simParamsRef.current.fadeSpeed;
       const tendrilsToRemove = new Set();
+      let fadingCount = 0;
+      let cellUpdatesCount = 0; // Track grid cell updates for perf monitoring
+
+      // If there are no fading tendrils, exit early to save CPU
+      const hasFadingTendrils = tendrilsRef.current.some(t => t.state === 'fading');
+      if (!hasFadingTendrils) return;
 
       tendrilsRef.current.forEach(tendril => {
           if (tendril.state === 'fading') {
+              fadingCount++;
+              const oldOpacity = tendril.opacity;
               tendril.opacity -= currentFadeSpeed;
+
+              // Log start of fading (first time its opacity drops)
+              if (oldOpacity === 1 && tendril.opacity < 1) {
+                  console.log(`Frame ${frameCountRef.current}: Starting to fade Tendril ${tendril.id}. Initial opacity: ${oldOpacity.toFixed(3)}`);
+              }
+
               if (tendril.opacity <= 0) {
+                  console.log(`Frame ${frameCountRef.current}: Removing faded Tendril ${tendril.id}`);
                   tendrilsToRemove.add(tendril.id);
               } else {
                   // Update grid opacity for fading tendril path
                   tendril.path.forEach(p => {
                       if (isWithinBounds(p.x, p.y)) {
                           const cell = gridRef.current[p.y][p.x];
-                           if (cell && cell.tendrilId?.includes(tendril.id)) { // Check if this tendril is part of the cell
-                             cell.opacity = Math.min(cell.opacity, tendril.opacity); // Use the minimum opacity if shared
-                         }
+                          if (cell) {
+                              const cellTendrilIds = cell.tendrilId?.split(',') || [];
+
+                              // IMPORTANT: Handle branch points differently
+                              if (cellTendrilIds.length > 1) {
+                                  // For cells with multiple tendrils (branch points), update only this tendril's impact
+                                  const fadingIds = cellTendrilIds.filter(id => {
+                                      const t = findTendrilById(id);
+                                      return t && t.state === 'fading';
+                                  });
+
+                                  const nonFadingIds = cellTendrilIds.filter(id => {
+                                      const t = findTendrilById(id);
+                                      return t && t.state !== 'fading';
+                                  });
+
+                                  // If there are still visible tendrils at this point, don't fade the cell
+                                  if (nonFadingIds.length > 0) {
+                                      // Branch point remains visible - don't change cell opacity
+                                      cellUpdatesCount++;
+                                  } else if (fadingIds.length > 0) {
+                                      // All tendrils at this point are fading - use the maximum opacity
+                                      let maxOpacity = 0;
+                                      fadingIds.forEach(id => {
+                                          const t = findTendrilById(id);
+                                          if (t) maxOpacity = Math.max(maxOpacity, t.opacity);
+                                      });
+                                      cell.opacity = maxOpacity;
+                                      cellUpdatesCount++;
+                                  }
+                              } else if (cell.tendrilId && cell.tendrilId.includes(tendril.id)) {
+                                  // Simple case: just one tendril owns this cell
+                                  cell.opacity = tendril.opacity;
+                                  cellUpdatesCount++;
+                              }
+                          }
                       }
                   });
               }
           }
       });
 
+      if (fadingCount > 0) {
+          console.log(`Frame ${frameCountRef.current}: Processing ${fadingCount} fading tendrils. Updated ${cellUpdatesCount} grid cells.`);
+      }
+
       if (tendrilsToRemove.size > 0) {
+          console.log(`Frame ${frameCountRef.current}: Removing ${tendrilsToRemove.size} fully faded tendrils from list.`);
+          // Separate into branches and non-branches for logging
+          const branchCount = tendrilsRef.current.filter(t => t.isBranch && tendrilsToRemove.has(t.id)).length;
+          const mainCount = tendrilsToRemove.size - branchCount;
+          console.log(`  Removed tendrils: ${mainCount} main, ${branchCount} branches`);
+
           tendrilsRef.current = tendrilsRef.current.filter(t => !tendrilsToRemove.has(t.id));
+
           // Clean up grid references (more robustly)
           for (let y = 0; y < gridDimensions.current.height; y++) {
               for (let x = 0; x < gridDimensions.current.width; x++) {
@@ -696,35 +793,81 @@ const GameOfLifeCanvas = () => {
 
   // --- Path Verification Logic ---
   const verifyTendrilConnectivity = (tendril, sourcePos, visited) => {
-      if (!tendril || visited.has(tendril.id)) return false; // Already checked or doesn't exist
+      if (!tendril || visited.has(tendril.id)) {
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril?.id} already visited or null.`);
+          return false; // Already checked or doesn't exist
+      }
       visited.add(tendril.id);
 
       // Base case: Tendril starts at the source
       if (tendril.path.length > 0 && tendril.path[0].x === sourcePos.x && tendril.path[0].y === sourcePos.y) {
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril.id} VERIFIED as connected (starts at source).`);
           return true;
+      }
+
+      // Logging the check for clarity
+      console.log(`Frame ${frameCountRef.current}: VerifyConn - Checking connectivity for tendril ${tendril.id}, state: ${tendril.state}, isSource: ${tendril.path[0].x === sourcePos.x && tendril.path[0].y === sourcePos.y}, isBranch: ${tendril.isBranch}, parent: ${tendril.parentId}`);
+
+      // IMPORTANT: Check tendril state immediately. If it's already fading/blocked, it's not connected
+      if (tendril.state === 'fading' || tendril.state === 'blocked') {
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril.id} is already ${tendril.state}, therefore not connected.`);
+          return false;
       }
 
       // Recursive case: Check if parent is connected
       if (tendril.isBranch && tendril.parentId) {
           const parentTendril = findTendrilById(tendril.parentId);
-          if (!parentTendril) return false; // Parent gone
+          if (!parentTendril) {
+              console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${tendril.parentId} of ${tendril.id} not found. Not connected.`);
+              return false; // Parent gone
+          }
+
+          // CHECK: Is the parent already marked as fading or blocked?
+          if (parentTendril.state === 'fading' || parentTendril.state === 'blocked') {
+              console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} of ${tendril.id} is ${parentTendril.state}. Branch not connected.`);
+              return false;
+          }
 
           // Check if branch point exists in parent path
-          const branchPoint = tendril.path[0]; // Branch starts one step after parent head
+          const branchPoint = tendril.path[0]; // This should be the connection point between parent and branch
           const parentContainsBranchPoint = parentTendril.path.some(p => p.x === branchPoint.x && p.y === branchPoint.y);
 
-          if (parentContainsBranchPoint) {
-              return verifyTendrilConnectivity(parentTendril, sourcePos, visited); // Check parent's connection
+          if (!parentContainsBranchPoint) {
+              console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} doesn't contain branch point (${branchPoint.x},${branchPoint.y}) for branch ${tendril.id}. Not connected.`);
+              return false;
           }
+
+          // Recursive call: Is the PARENT connected?
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Recursively checking parent ${parentTendril.id} for branch ${tendril.id}`);
+          const parentConnected = verifyTendrilConnectivity(parentTendril, sourcePos, visited);
+
+          if (parentConnected) {
+              console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} is connected, so branch ${tendril.id} is connected.`);
+          } else {
+              console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} is NOT connected, so branch ${tendril.id} is NOT connected.`);
+          }
+
+          return parentConnected;
       }
 
-      return false; // Not connected
+      // If we get here, this is not a branch OR it's a branch without a valid parent, but doesn't start at the source
+      console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril.id} is not a branch or has no parent, and didn't reach source. Not connected.`);
+      return false;
   };
 
   const verifyPathIntegrity = () => {
+      console.log(`Frame ${frameCountRef.current}: Verifying path integrity...`);
       const allTendrils = [...tendrilsRef.current]; // Copy array as it might be modified
       const sourcesMap = new Map(sourcesRef.current.map(s => [s.id, {x: s.x, y: s.y}]));
       let disconnectedCount = 0;
+      let markedFadingCount = 0;
+
+      // Track counts before
+      const beforeGrowing = allTendrils.filter(t => t.state === 'growing').length;
+      const beforeFading = allTendrils.filter(t => t.state === 'fading').length;
+
+      // For tracking tendril states by connectivity result
+      const connectivityResults = { connected: [], disconnected: [] };
 
       allTendrils.forEach(tendril => {
           // Only verify active tendrils (growing, connected, blocked)
@@ -734,28 +877,55 @@ const GameOfLifeCanvas = () => {
           if (!sourcePos) {
                console.warn(`Tendril ${tendril.id} has missing source ${tendril.sourceId}. Marking for removal.`);
                tendril.state = 'fading';
-               disconnectedCount++;
+               markedFadingCount++;
+               disconnectedCount++; // Treat as disconnected
+               connectivityResults.disconnected.push(tendril.id);
                return; // Skip if source doesn't exist
           }
 
           const visited = new Set(); // Reset visited set for each tendril verification chain
           const isConnected = verifyTendrilConnectivity(tendril, sourcePos, visited);
 
-          if (!isConnected) {
+          if (isConnected) {
+              // Store this tendril as connected for logging
+              connectivityResults.connected.push(tendril.id);
+          } else {
+              console.log(`Frame ${frameCountRef.current}: Tendril ${tendril.id} (source ${tendril.sourceId}) failed integrity check. Path length: ${tendril.path.length}. Current state: ${tendril.state}. Marking for fade.`);
               tendril.state = 'fading';
+              markedFadingCount++;
               disconnectedCount++;
+              connectivityResults.disconnected.push(tendril.id);
 
                // Mark all tendrils visited during this failed check as fading
                visited.forEach(visitedId => {
                    const t = findTendrilById(visitedId);
                    if(t && t.state !== 'fading') {
+                       console.log(`   Also marking ${visitedId} as fading due to disconnection.`);
                        t.state = 'fading';
+                       markedFadingCount++;
+                       connectivityResults.disconnected.push(visitedId);
                    }
                });
           }
       });
+
+      // Track counts after
+      const afterGrowing = tendrilsRef.current.filter(t => t.state === 'growing').length;
+      const afterFading = tendrilsRef.current.filter(t => t.state === 'fading').length;
+
+      // Log the results
       if (disconnectedCount > 0) {
-           console.log(`Integrity check complete. Found ${disconnectedCount} disconnected tendrils.`);
+          console.log(`Integrity check complete. Found ${disconnectedCount} disconnected tendrils. Marked ${markedFadingCount} as fading this check.`);
+          console.log(`Growing tendrils: ${beforeGrowing} -> ${afterGrowing}, Fading tendrils: ${beforeFading} -> ${afterFading}`);
+          console.log(`Disconnected tendrils: [${connectivityResults.disconnected.join(', ')}]`);
+      } else if (allTendrils.length > 0) {
+          console.log(`Frame ${frameCountRef.current}: All ${allTendrils.length} active tendrils verified as connected.`);
+      }
+
+      // Check for growth stoppage (if all tendrils are blocked or fading)
+      const stillGrowing = tendrilsRef.current.some(t => t.state === 'growing');
+      if (!stillGrowing && allTendrils.length > 0) {
+          console.log(`Frame ${frameCountRef.current}: ⚠️ WARNING: NO MORE GROWING TENDRILS. All are blocked, fading, or connected.`);
       }
   };
 
@@ -829,19 +999,43 @@ const GameOfLifeCanvas = () => {
 
 
   // --- Animation Loop ---
-   const render = () => {
-        console.log(`Render loop frame: ${frameCountRef.current}`);
+   const render = (timestamp) => { // Receive high-resolution timestamp
+        // console.log(`Render loop frame: ${frameCountRef.current}`);
         const canvas = canvasRef.current; // Add check for canvas existence
         if (!canvas || error) return;
 
+        // Track time and calculate delta time
+        const prevTime = currentTimeRef.current || timestamp;
+        currentTimeRef.current = timestamp; // Store current time
+        const deltaTime = timestamp - prevTime; // Time since last frame in ms
+
         safeExecute(() => {
             frameCountRef.current++;
-            const { signalInterval: currentSignalInterval } = simParamsRef.current;
+            const { signalFrequency: currentSignalFrequency } = simParamsRef.current;
 
-            // 1. Emit Signal Periodically
-            if (frameCountRef.current % Math.round(currentSignalInterval) === 0) {
+            // Calculate time-based interval - How often should signals be emitted (in ms)
+            const intervalMilliseconds = currentSignalFrequency > 0 ? 1000 / currentSignalFrequency : Infinity;
+            const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
+
+            // 1. Emit Signal Periodically (Time-based)
+            if (elapsedSinceLastEmit >= intervalMilliseconds) {
+                const actualFreq = 1000 / elapsedSinceLastEmit;
+                console.log(`Frame ${frameCountRef.current}: Emitting signal at effective freq: ${actualFreq.toFixed(2)} Hz (target: ${currentSignalFrequency.toFixed(2)} Hz)`);
                 emitSignal();
+                lastSignalEmitTimeRef.current = currentTimeRef.current; // Update last emit time
             }
+
+            // Every 100 frames, log active tendril counts for debugging
+            if (frameCountRef.current % 100 === 0) {
+                const totalTendrils = tendrilsRef.current.length;
+                const growingTendrils = tendrilsRef.current.filter(t => t.state === 'growing').length;
+                const blockedTendrils = tendrilsRef.current.filter(t => t.state === 'blocked').length;
+                const fadingTendrils = tendrilsRef.current.filter(t => t.state === 'fading').length;
+                const connectedTendrils = tendrilsRef.current.filter(t => t.state === 'connected').length;
+
+                console.log(`Frame ${frameCountRef.current}: TENDRIL STATS - Total: ${totalTendrils}, Growing: ${growingTendrils}, Blocked: ${blockedTendrils}, Fading: ${fadingTendrils}, Connected: ${connectedTendrils}`);
+            }
+
             // 2. Propagate Existing Signals
             const newlyReachedTips = propagateSignal();
             // 3. Trigger Growth at Tips Reached This Frame
@@ -850,7 +1044,7 @@ const GameOfLifeCanvas = () => {
             fadeTendrils();
             updateConnections();
             // 5. Verify Path Integrity Periodically
-            if (frameCountRef.current % 60 === 0) { // Less frequent check
+            if (frameCountRef.current % 20 === 0) { // More frequent check for debugging
                 verifyPathIntegrity();
             }
             // 6. Draw Everything
@@ -1035,11 +1229,11 @@ const GameOfLifeCanvas = () => {
        <div className={`absolute bottom-4 left-4 flex space-x-6 ${error ? 'hidden' : ''}`}> {/* Hide controls on error */}
            {/* Parameter Sliders */}
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
-                 {/* Signal Interval Slider */}
+                 {/* Signal Frequency Slider */}
                  <div className="flex items-center justify-between">
-                   <label htmlFor="signalInterval" className="flex-1">Signal Interval:</label>
-                   <input type="range" id="signalInterval" min="5" max="120" step="1" value={signalInterval} onChange={(e) => setSignalInterval(Number(e.target.value))} className="w-20 mx-2" />
-                   <span className="w-6 text-right">{signalInterval}</span>
+                   <label htmlFor="signalFrequency" className="flex-1">Signal Freq:</label> {/* Shorten label */}
+                   <input type="range" id="signalFrequency" min="0.2" max="4.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-2" />
+                   <span className="w-8 text-right">{signalFrequency.toFixed(1)} Hz</span> {/* Wider span */}
                  </div>
                  {/* Branch Chance Slider */}
                  <div className="flex items-center justify-between">
