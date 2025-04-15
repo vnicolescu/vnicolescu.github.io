@@ -7,19 +7,24 @@ const GROWTH_STEP = 1; // How many cells to grow per signal arrival
 const DEFAULT_SIGNAL_INTERVAL = 30; // Frames between signal emissions
 const DEFAULT_BRANCH_CHANCE = 0.15;
 const DEFAULT_FADE_SPEED = 0.005; // Slow fade speed
+const DEFAULT_PULSE_SPEED = 2; // Default cells per second pulse travels
 const FLASH_DURATION_FRAMES = 15;
 const MAX_BRANCH_ATTEMPTS = 5; // Reduce attempts to avoid hangs
 const SOURCE_REGENERATION_DELAY = 120; // Increase delay
 const MIN_PATH_LENGTH_FOR_BRANCHING = 5; // Increase slightly
 const BRANCH_ADJACENCY_IMMUNITY_STEPS = 5;
+const MAX_CELL_AGE = 1000; // Maximum age for color calculation (frames)
+const MIN_CONDUCTIVITY = 0.5; // Minimum conductivity multiplier for young cells
+const MAX_CONDUCTIVITY = 2.0; // Maximum conductivity multiplier for old cells
 
 // --- Colors (using your palette) ---
 const SOURCE_COLOR = '#6366F1';
 const BACKGROUND_COLOR = '#000000';
 const GRID_COLOR = '#374151'; // Unused currently
-const TENDRIL_COLOR = '#1E3A8A'; // Navy Blue
-const SIGNAL_COLOR = '#F59E0B'; // Solar Amber for signal
-const BRANCH_POINT_COLOR = '#FFFFFF'; // White for temp branch points
+const OLD_TENDRIL_COLOR = '#1E3A8A'; // Navy Blue for oldest segments
+const YOUNG_TENDRIL_COLOR = '#F59E0B'; // Orange for newest growth
+const SIGNAL_COLOR = '#FFFFFF'; // White for signal pulse
+const BRANCH_POINT_COLOR = '#FFFFFF'; // White for temp branch points (could update this)
 const FLASH_COLOR = '#FFFFFF';
 const CONNECTION_COLOR = '#F59E0B';
 const FADING_COLOR_INTERPOLATE = true; // Use color interpolation for fading
@@ -129,6 +134,40 @@ const weightedRandomSelect = (options) => {
   return validOptions.length > 0 ? validOptions[validOptions.length - 1].item : null; // Fallback
 };
 
+// Utility to interpolate colors based on t (0-1)
+const interpolateColors = (color1Hex, color2Hex, t) => {
+    // Convert hex to RGB
+    const parseHex = (hex) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return [r, g, b];
+    };
+
+    const [r1, g1, b1] = parseHex(color1Hex);
+    const [r2, g2, b2] = parseHex(color2Hex);
+
+    // Interpolate RGB values
+    const r = Math.round(r1 + (r2 - r1) * t);
+    const g = Math.round(g1 + (g2 - g1) * t);
+    const b = Math.round(b1 + (b2 - b1) * t);
+
+    // Convert back to hex
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+};
+
+// Age-based color calculation
+const getColorFromAge = (age) => {
+    const normalizedAge = Math.min(age / MAX_CELL_AGE, 1); // Cap at 1
+    return interpolateColors(YOUNG_TENDRIL_COLOR, OLD_TENDRIL_COLOR, normalizedAge);
+};
+
+// Age-based conductivity calculation
+const getConductivityFromAge = (age) => {
+    const normalizedAge = Math.min(age / MAX_CELL_AGE, 1); // Cap at 1
+    return MIN_CONDUCTIVITY + normalizedAge * (MAX_CONDUCTIVITY - MIN_CONDUCTIVITY);
+};
+
 // --- Main Component ---
 const GameOfLifeCanvas = () => {
   const canvasRef = useRef(null);
@@ -149,16 +188,17 @@ const GameOfLifeCanvas = () => {
   const [signalFrequency, setSignalFrequency] = useState(initialSettings?.signalFrequency ?? 1.0); // Default 1 Hz
   const [branchChance, setBranchChance] = useState(initialSettings?.branchChance ?? 0.1); // 10% default
   const [fadeSpeed, setFadeSpeed] = useState(initialSettings?.fadeSpeed ?? DEFAULT_FADE_SPEED);
+  const [pulseSpeed, setPulseSpeed] = useState(initialSettings?.pulseSpeed ?? DEFAULT_PULSE_SPEED); // Cells per second
   const [directionWeights, setDirectionWeights] = useState(initialSettings?.directionWeights ?? [0.8, 2.5, 0.8, 0.3, 0, 0.3, 0.1, 0.1, 0.1]);
   const sourceStatesRef = useRef({}); // Tracks regeneration status
 
   // Ref for current simulation parameters
-  const simParamsRef = useRef({ signalFrequency, branchChance, fadeSpeed, directionWeights }); // Use frequency
+  const simParamsRef = useRef({ signalFrequency, branchChance, fadeSpeed, pulseSpeed, directionWeights });
   useEffect(() => {
-    const currentSettings = { signalFrequency, branchChance, fadeSpeed, directionWeights };
-    simParamsRef.current = currentSettings; // Use frequency
-    saveSettingsToLocalStorage(currentSettings); // Save on change
-  }, [signalFrequency, branchChance, fadeSpeed, directionWeights]); // Update dependencies
+    const currentSettings = { signalFrequency, branchChance, fadeSpeed, pulseSpeed, directionWeights };
+    simParamsRef.current = currentSettings;
+    saveSettingsToLocalStorage(currentSettings);
+  }, [signalFrequency, branchChance, fadeSpeed, pulseSpeed, directionWeights]);
 
   // --- Core Simulation Logic ---
 
@@ -273,30 +313,70 @@ const GameOfLifeCanvas = () => {
         });
     };
 
-    const propagateSignal = () => {
+    const propagateSignal = (deltaTime = 16.67) => { // Default to ~60 FPS if not specified
         const newlyReachedTips = new Set();
         const signalsToUpdate = [];
+        const basePulseSpeed = simParamsRef.current.pulseSpeed; // Base speed in cells/second
 
         tendrilsRef.current.forEach(tendril => {
             if (tendril.signalState !== 'propagating') return;
 
             const currentSignalPos = tendril.signalPosition;
-            const nextSignalPos = currentSignalPos + 1;
-            const endPositionIndex = tendril.path.length - 1;
+            const pathLength = tendril.path.length;
 
-            if (nextSignalPos > endPositionIndex) {
-                signalsToUpdate.push({ tendrilId: tendril.id, nextState: 'reached_tip', nextPos: endPositionIndex });
+            if (currentSignalPos >= pathLength - 1) {
+                // Already at the end
+                signalsToUpdate.push({ tendrilId: tendril.id, nextState: 'reached_tip', nextPos: pathLength - 1 });
                 newlyReachedTips.add(tendril.id);
-            } else {
-                signalsToUpdate.push({ tendrilId: tendril.id, nextState: 'propagating', nextPos: nextSignalPos });
+                return;
+            }
+
+            // Get the current cell in the path
+            const currentPathPoint = tendril.path[currentSignalPos];
+            if (!currentPathPoint) return;
+
+            // Get cell from grid to check its age
+            const cell = gridRef.current[currentPathPoint.y]?.[currentPathPoint.x];
+            if (!cell) return;
+
+            // Calculate conductivity multiplier based on cell age
+            const conductivity = getConductivityFromAge(cell.age);
+
+            // Calculate how far signal should travel this frame
+            // Base speed * conductivity * (milliseconds per frame / 1000) = cells per frame
+            const cellsToTravel = basePulseSpeed * conductivity * (deltaTime / 1000);
+
+            // Fractional position tracking for smooth movement
+            const fractionalPos = tendril.fractionalPos || currentSignalPos;
+            const newFractionalPos = fractionalPos + cellsToTravel;
+
+            // Convert to integer position for actual rendering and checks
+            const newIntPos = Math.floor(newFractionalPos);
+
+            // Ensure we don't exceed path length
+            const nextPos = Math.min(newIntPos, pathLength - 1);
+
+            // Store fractional position for next frame's calculation
+            const nextState = nextPos >= pathLength - 1 ? 'reached_tip' : 'propagating';
+
+            signalsToUpdate.push({
+                tendrilId: tendril.id,
+                nextState: nextState,
+                nextPos: nextPos,
+                fractionalPos: newFractionalPos
+            });
+
+            if (nextState === 'reached_tip') {
+                newlyReachedTips.add(tendril.id);
             }
         });
 
-        signalsToUpdate.forEach(({ tendrilId, nextState, nextPos }) => {
+        signalsToUpdate.forEach(({ tendrilId, nextState, nextPos, fractionalPos }) => {
             const tendril = findTendrilById(tendrilId);
             if (tendril) {
                 tendril.signalState = nextState;
                 tendril.signalPosition = nextPos;
+                tendril.fractionalPos = fractionalPos;
 
                 if (nextState === 'propagating') {
                     const currentCellCoord = tendril.path[nextPos];
@@ -420,7 +500,16 @@ const GameOfLifeCanvas = () => {
 
         // *** Perform the single growth step ***
         tendril.path.push(nextCell);
-        const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId, opacity: tendril.opacity };
+        const cellColor = getColorFromAge(0); // New cells start at age 0 (orange)
+        const gridCellData = {
+            type: 'tendril',
+            color: cellColor,
+            tendrilId: tendril.id,
+            sourceId: tendril.sourceId,
+            opacity: tendril.opacity,
+            age: 0, // Start at age 0
+            creationFrame: frameCountRef.current
+        };
         gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
 
         // --- Branching Check (AFTER successful growth step) ---
@@ -491,7 +580,16 @@ const GameOfLifeCanvas = () => {
             newBranches.push(branchTendril);
 
             // Mark Grid
-            gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, { type: 'tendril', color: TENDRIL_COLOR, tendrilId: branchId, sourceId: parentTendril.sourceId, opacity: 1 });
+            gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, {
+                type: 'tendril',
+                color: getColorFromAge(0), // New branch cells start at age 0 (orange)
+                tendrilId: branchId,
+                sourceId: parentTendril.sourceId,
+                opacity: 1,
+                age: 0, // Start at age 0
+                creationFrame: frameCountRef.current
+            });
+
             // Mark Branch Point
             const bpCell = gridRef.current[headCell.y]?.[headCell.x];
             const existingIds = bpCell?.tendrilId ? bpCell.tendrilId.split(',') : [];
@@ -542,6 +640,8 @@ const GameOfLifeCanvas = () => {
         isBranchPoint: false,
         branchTime: 0,
         connectionState: 'none', // For connection points
+        age: 0, // Add age tracking
+        creationFrame: 0 // Track when cell was created
       }))
     );
   };
@@ -573,7 +673,14 @@ const GameOfLifeCanvas = () => {
         const sourceId = `s-${i}`;
         sourcesRef.current.push({ id: sourceId, x, y });
         if (isWithinBounds(x, y)) {
-          gridRef.current[y][x] = { type: 'source', color: SOURCE_COLOR, sourceId: sourceId, opacity: 1 };
+          gridRef.current[y][x] = {
+            type: 'source',
+            color: SOURCE_COLOR,
+            sourceId: sourceId,
+            opacity: 1,
+            age: MAX_CELL_AGE, // Sources are at max age (they're established)
+            creationFrame: frameCountRef.current
+          };
         }
         placedCoords.add(coordKey);
         sourceStatesRef.current[sourceId] = { state: 'active', lastActivity: 0 };
@@ -1000,7 +1107,6 @@ const GameOfLifeCanvas = () => {
 
   // --- Animation Loop ---
    const render = (timestamp) => { // Receive high-resolution timestamp
-        // console.log(`Render loop frame: ${frameCountRef.current}`);
         const canvas = canvasRef.current; // Add check for canvas existence
         if (!canvas || error) return;
 
@@ -1037,22 +1143,21 @@ const GameOfLifeCanvas = () => {
             }
 
             // 2. Propagate Existing Signals
-            const newlyReachedTips = propagateSignal();
+            const newlyReachedTips = propagateSignal(deltaTime);
             // 3. Trigger Growth at Tips Reached This Frame
             triggerGrowthAtTips(newlyReachedTips);
             // 4. Update Fading, Connections, etc.
             fadeTendrils();
             updateConnections();
-            // 5. Verify Path Integrity Periodically
+            // 5. Update cell ages
+            updateCellAges();
+            // 6. Verify Path Integrity Periodically
             if (frameCountRef.current % 20 === 0) { // More frequent check for debugging
                 verifyPathIntegrity();
             }
-            // 6. Draw Everything
+            // 7. Draw Everything
             drawGridAndElements(); // Call draw function
-            // Continue animation
-            // Note: The animationFrameId should be the one from the useEffect scope
-            // If we need to ensure it continues, we might need to manage it slightly differently
-            // For now, assume the main loop started in useEffect handles continuation
+
             animationFrameIdRef.current = window.requestAnimationFrame(render); // Re-enable this line!
         });
     };
@@ -1090,32 +1195,27 @@ const GameOfLifeCanvas = () => {
                 } else if (cell.type === 'connection') {
                      drawColor = cell.state === 'flashing' ? FLASH_COLOR : CONNECTION_COLOR;
                 } else if (cell.type === 'tendril') {
-                    // Base color is tendril color unless faded or branch point
-                    drawColor = TENDRIL_COLOR;
+                    // Use cell's color which is based on age
+                    drawColor = cell.color;
+
                      if (cell.isBranchPoint) {
                          const branchAge = frameCountRef.current - (cell.branchTime || 0);
                          const branchVisibleDuration = cell.branchVisibleDuration || 30;
                          if (branchAge <= branchVisibleDuration) {
                              drawColor = BRANCH_POINT_COLOR; // Highlight phase
-                         } else { // Transition phase
-                              const transitionProgress = Math.min(1, (branchAge - branchVisibleDuration) / 20);
-                              const r = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(1, 3), 16) * transitionProgress);
-                              const g = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(3, 5), 16) * transitionProgress);
-                              const b = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(5, 7), 16) * transitionProgress);
-                              drawColor = `rgb(${r}, ${g}, ${b})`;
+                         } else { // Transition phase - back to age-based color
+                             drawColor = cell.color;
                          }
                      } else if (cell.opacity < 1 && FADING_COLOR_INTERPOLATE) {
                           // Interpolate color for fading non-branch points
-                          const baseColor = parseInt(TENDRIL_COLOR.slice(1), 16);
                           const bgColor = parseInt(BACKGROUND_COLOR.slice(1), 16);
-                          const baseR = (baseColor >> 16) & 255; const baseG = (baseColor >> 8) & 255; const baseB = baseColor & 255;
-                          const bgR = (bgColor >> 16) & 255; const bgG = (bgColor >> 8) & 255; const bgB = bgColor & 255;
-                          const r = Math.round(baseR * cell.opacity + bgR * (1 - cell.opacity));
-                          const g = Math.round(baseG * cell.opacity + bgG * (1 - cell.opacity));
-                          const b = Math.round(baseB * cell.opacity + bgB * (1 - cell.opacity));
+                          const cellRgb = parseHex(cell.color);
+                          const bgRgb = parseHex(BACKGROUND_COLOR);
+
+                          const r = Math.round(cellRgb[0] * cell.opacity + bgRgb[0] * (1 - cell.opacity));
+                          const g = Math.round(cellRgb[1] * cell.opacity + bgRgb[1] * (1 - cell.opacity));
+                          const b = Math.round(cellRgb[2] * cell.opacity + bgRgb[2] * (1 - cell.opacity));
                           drawColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0')}`;
-                      } else if (cell.opacity < 1) {
-                           drawColor = FADING_COLOR; // Fallback non-interpolated fade color
                       }
                 }
 
@@ -1130,7 +1230,7 @@ const GameOfLifeCanvas = () => {
              if (tendril.signalState === 'propagating' && tendril.signalPosition >= 0 && tendril.signalPosition < tendril.path.length) {
                  const signalCoord = tendril.path[tendril.signalPosition];
                  if (isWithinBounds(signalCoord.x, signalCoord.y)) {
-                     context.fillStyle = SIGNAL_COLOR;
+                     context.fillStyle = SIGNAL_COLOR; // White signal color
                      context.globalAlpha = tendril.opacity; // Use tendril opacity
                      context.fillRect(signalCoord.x * CELL_SIZE, signalCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
                  }
@@ -1139,6 +1239,13 @@ const GameOfLifeCanvas = () => {
          context.globalAlpha = 1.0; // Reset global alpha
     };
 
+    // Helper for hex parsing
+    const parseHex = (hex) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return [r, g, b];
+    };
 
   // --- Initialization and Cleanup ---
    useEffect(() => {
@@ -1235,6 +1342,14 @@ const GameOfLifeCanvas = () => {
                    <input type="range" id="signalFrequency" min="0.2" max="4.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-8 text-right">{signalFrequency.toFixed(1)} Hz</span> {/* Wider span */}
                  </div>
+
+                 {/* Pulse Speed Slider */}
+                 <div className="flex items-center justify-between">
+                   <label htmlFor="pulseSpeed" className="flex-1">Pulse Speed:</label>
+                   <input type="range" id="pulseSpeed" min="0.5" max="10.0" step="0.5" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-20 mx-2" />
+                   <span className="w-8 text-right">{pulseSpeed.toFixed(1)}</span>
+                 </div>
+
                  {/* Branch Chance Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="branch" className="flex-1">Branch Chance:</label>
