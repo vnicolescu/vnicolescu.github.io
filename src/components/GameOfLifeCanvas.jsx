@@ -568,26 +568,34 @@ const GameOfLifeCanvas = () => {
         // **Now re-evaluate pulse removal based on growth results**
         const finalPulsesToRemove = [];
         pulsesRef.current.forEach((pulse, index) => {
-            // Check if this pulse was marked for potential removal earlier
-            const wasMarkedForRemoval = pulsesToRemove.includes(index);
-            let removeThisPulse = wasMarkedForRemoval;
-
             const tendril = findTendrilById(pulse.tendrilId);
-            if (tendril && tendril.state === 'growing' && pulse.position >= tendril.path.length - 1) {
-                // Re-check if pulse is off the end *after* growth attempt
-                if (pulse.position >= tendril.path.length) {
-                   console.log(`DEBUG: Pulse ${pulse.id} is confirmed past end of tendril ${tendril.id} after growth check, removing.`);
-                   removeThisPulse = true;
-                } else {
-                    // Pulse triggered growth, but growth failed to extend path? Or pulse simply reached the new end?
+
+            // Default: Don't remove unless a condition is met
+            let removeThisPulse = false;
+
+            if (!tendril) {
+                removeThisPulse = true; // Remove pulse if tendril doesn't exist
+            } else if (tendril.state !== 'growing' && tendril.state !== 'connected') {
+                removeThisPulse = true; // Remove pulse if tendril is inactive
+                if (tendril.isBranch) console.log(`Final Check: Removing pulse ${pulse.id} for inactive branch ${tendril.id}`);
+            } else {
+                // Tendril is active (growing or connected)
+                const endPositionIndex = tendril.path.length - 1;
+
+                // Condition 1: Pulse has moved strictly *past* the end of the path
+                if (pulse.position > endPositionIndex) {
+                    console.log(`DEBUG: Pulse ${pulse.id} is confirmed past end of tendril ${tendril.id} after growth check (pos ${pulse.position} > endIdx ${endPositionIndex}), removing.`);
+                    removeThisPulse = true;
+                }
+                // Condition 2: Pulse is exactly at the end *AND* growth failed (or wasn't triggered)
+                else if (pulse.position === endPositionIndex) {
                     const growthResult = growthResults.get(pulse.tendrilId);
-                    if (growthResult && !growthResult.pathExtended) {
-                        console.log(`DEBUG: Pulse ${pulse.id} triggered growth for ${pulse.tendrilId}, but path did not extend. Removing pulse.`);
+                    // Remove if growth was triggered but failed, OR if tendril isn't growing anymore
+                    if ((growthResult && !growthResult.pathExtended) || tendril.state !== 'growing') {
+                        console.log(`DEBUG: Pulse ${pulse.id} at end of tendril ${tendril.id}, but growth failed or tendril stopped. Removing pulse.`);
                         removeThisPulse = true;
-                    } else {
-                         // Path extended or pulse just reached the new end - keep it
-                         removeThisPulse = false;
                     }
+                    // *** Otherwise (pulse at end, growth succeeded or wasn't triggered on non-growing), KEEP the pulse ***
                 }
             }
 
@@ -1019,6 +1027,8 @@ const GameOfLifeCanvas = () => {
 
     // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
+        if (tendril.isBranch) console.log(`---> tryGrowTendril for BRANCH ${tendril.id}, PathLen: ${tendril.path.length}, State: ${tendril.state}`); // Log entry
+
         const gridUpdates = new Map();
         const newBranches = [];
         const newlyConnectedSources = new Set();
@@ -1029,15 +1039,17 @@ const GameOfLifeCanvas = () => {
         let hasGrown = false;
 
         if (!currentHead) {
+            if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: No currentHead, returning.`);
              return;
-         }
+        }
 
         // CRITICAL SAFETY: Check if current head is at grid boundary
         // If so, block the tendril from growing further
         // NOTE: Fixed off-by-one error in boundary check
         if (currentHead.x <= 1 || currentHead.x >= gridWidth-2 ||
             currentHead.y <= 1 || currentHead.y >= gridHeight-2) {
-            console.log(`Tendril ${tendril.id} near boundary at (${currentHead.x},${currentHead.y}). Marking as blocked.`);
+            if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: Near boundary, marking blocked.`);
+            // console.log(`Tendril ${tendril.id} near boundary at (${currentHead.x},${currentHead.y}). Marking as blocked.`); // Reduce noise
             tendril.state = 'blocked';
             return;
         }
@@ -1050,11 +1062,13 @@ const GameOfLifeCanvas = () => {
         const validEmptyNeighbors = neighbors.empty.filter(n =>
             !(previousCell && n.x === previousCell.x && n.y === previousCell.y)
         );
+        if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: Found ${neighbors.empty.length} empty neighbors, ${validEmptyNeighbors.length} valid (not prev).`);
 
         // Filter out cells already in this tendril's path (direct overlap)
         const nonSelfNeighbors = validEmptyNeighbors.filter(n =>
             !tendril.path.some(p => p.x === n.x && p.y === n.y)
         );
+        if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: ${nonSelfNeighbors.length} non-self neighbors.`);
 
          // Prepare neighbors with weights, adding adjacency check
          const weightedNeighbors = nonSelfNeighbors.map(neighbor => {
@@ -1092,6 +1106,8 @@ const GameOfLifeCanvas = () => {
                  }
              });
 
+             let originalWeight = weight;
+
              // BRANCH SURVIVAL IMPROVEMENT: For branches, increase forward momentum
              // This helps them avoid getting stuck or self-colliding
              if ((tendril.isBranch || tendril.isRegenerated) && weight > 0) {
@@ -1109,14 +1125,22 @@ const GameOfLifeCanvas = () => {
                  }
              }
 
+             let penaltyApplied = false;
              // --- New simplified adjacency penalty check ---
              const hasAdjacencyPenalty = checkAdjacencyPenalty(tendril, neighbor, currentHead, previousCell);
              if (hasAdjacencyPenalty) {
                weight = 0;
+               penaltyApplied = true;
+             }
+
+             if (tendril.isBranch) {
+                 console.log(`     -> Neighbor (${neighbor.x},${neighbor.y}), Dir(${dx},${dy}), BaseW: ${originalWeight.toFixed(1)}, MomentumW: ${weight.toFixed(1)}, Penalty: ${penaltyApplied}`);
              }
 
              return { item: neighbor, weight: weight };
          }).filter(n => n.weight > 0); // Filter again AFTER penalty applied
+
+        if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: ${weightedNeighbors.length} weighted neighbors after filtering.`);
 
         // Check for collision with other source tendrils first
         if (neighbors.collision.length > 0) {
@@ -1160,6 +1184,7 @@ const GameOfLifeCanvas = () => {
 
         // --- Blocked Check ---
         if (weightedNeighbors.length === 0) {
+            if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: Blocked (no weighted neighbors).`);
             // Check if blocked by self or just boundaries/other static elements
              if (neighbors.empty.length > 0 && validEmptyNeighbors.length === 0) {
                  // Blocked by immediate backtrack prevention - allow stopping
@@ -1179,10 +1204,12 @@ const GameOfLifeCanvas = () => {
         // Choose the next cell using weighted random selection
         const nextCell = weightedRandomSelect(weightedNeighbors);
         if (!nextCell) { // Handle case where selection might fail (should be rare)
-            console.warn(`Weighted random selection failed for tendril ${tendril.id}, blocking.`);
+            if (tendril.isBranch) console.warn(`   BRANCH ${tendril.id}: Weighted random selection failed, blocking.`);
+            // console.warn(`Weighted random selection failed for tendril ${tendril.id}, blocking.`); // Reduce noise
             tendril.state = 'blocked';
             return;
         }
+        if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: Chose next cell (${nextCell.x},${nextCell.y})`);
 
         // CRITICAL SAFETY: Extra boundary check before moving (redundant but safe)
         if (!isWithinBounds(nextCell.x, nextCell.y, gridWidth, gridHeight)) {
@@ -1200,11 +1227,12 @@ const GameOfLifeCanvas = () => {
         // Move to the chosen next cell
         // Only proceed if a valid next cell was chosen
         if (nextCell) {
-        currentHead = nextCell;
-        hasGrown = true;
-        const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
-        gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
-        tendril.path.push(nextCell);
+            currentHead = nextCell;
+            hasGrown = true;
+            const gridCellData = { type: 'tendril', color: TENDRIL_COLOR, tendrilId: tendril.id, sourceId: tendril.sourceId };
+            gridUpdates.set(`${nextCell.y}-${nextCell.x}`, gridCellData);
+            tendril.path.push(nextCell);
+            if (tendril.isBranch) console.log(`   BRANCH ${tendril.id}: Successfully grew to (${nextCell.x},${nextCell.y}). New PathLen: ${tendril.path.length}`);
         } else {
             // If no next cell was found (e.g., blocked), handle it gracefully
             console.warn(`Tendril ${tendril.id} could not find a next cell to grow into.`);
@@ -1238,6 +1266,8 @@ const GameOfLifeCanvas = () => {
                  }
              });
         }
+
+        if (tendril.isBranch && !hasGrown) console.log(`   BRANCH ${tendril.id}: Reached end of tryGrowTendril but hasGrown is false.`);
     };
 
     // --- Fading Logic Implementation (Rule #9) ---
