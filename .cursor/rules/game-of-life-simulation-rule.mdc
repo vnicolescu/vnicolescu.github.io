@@ -1,0 +1,55 @@
+---
+description: 
+globs: src/components/GameOfLifeCanvas.jsx
+alwaysApply: false
+---
+# 🧬 Game of Life Simulation Rule
+
+## 🎯 Overarching Goal
+
+Create a visually captivating, generative simulation within a React component (`GameOfLifeCanvas.jsx`) that evokes organic, tendril-like growth patterns originating from multiple sources. The simulation should feature:
+-   **Tendril Growth:** Structures ("tendrils") grow outwards from sources across a grid.
+-   **Branching:** Tendrils should probabilistically branch off, creating complex networks.
+-   **Signal Propagation:** Growth should not be continuous but triggered by distinct "signals" or "waves" propagating from the source along the tendrils to their tips. Growth occurs *only* when a signal reaches a tip.
+-   **Fading/Cleanup:** Tendrils that become disconnected from their origin source should gracefully fade and be removed.
+-   **Connections:** Tendrils from different sources might eventually connect (feature needs refinement).
+-   **Aesthetics:** Aim for a visually pleasing "constellation" or "neural network" feel, using the project's color palette, with clear visualization of tendrils and signal movement.
+-   **Interactivity:** Allow user control over key parameters like signal frequency, branching chance, fade speed, and growth direction biases via UI controls.
+
+## 📜 History & Key Observations
+
+1.  **Initial Version (Pulse-based):** Started with a simpler model where "pulses" traveled along tendrils, and each pulse step potentially triggered growth.
+2.  **Branching Issues:** Introducing branching led to challenges:
+    *   Branches often died quickly or didn't survive.
+    *   Fine-tuning growth/branching logic was difficult.
+3.  **Continuous Growth Problem:** Attempts to improve survival and visuals resulted in tendrils growing continuously at the same rate as the pulse/signal, losing the discrete wave effect ("cancerous" growth). Path integrity (connection to source) also became unreliable.
+4.  **User Request for Signal Model:** Vlatko requested a clear separation: signals should travel the *entire* length of a tendril (and its branches) from source to tip, and growth should *only* be triggered at the tip *after* the signal arrives. The tendril path itself should remain static between signal arrivals.
+5.  **Major Refactor (Signal Propagation):** Initiated a significant refactor to implement this signal-based model, removing the old pulse logic.
+
+## 🛠️ Implementation Concepts (Current Signal Model)
+
+-   **`Sources`**: Fixed points on the grid where tendrils originate (`sourcesRef`).
+-   **`Tendrils`**: Data structures representing the growing paths (`tendrilsRef`). Each has:
+    -   `id`, `sourceId`, `parentId` (if branch)
+    -   `path`: Array of `{x, y}` coordinates.
+    -   `state`: `'growing'`, `'blocked'`, `'fading'`, `'connected'`.
+    -   `signalState`: `'idle'`, `'propagating'`, `'reached_tip'`.
+    -   `signalPosition`: Index in the `path` array where the signal currently is.
+    -   `opacity`, `isBranch`, `creation` timestamp.
+-   **`Grid`**: 2D array representing the canvas cells (`gridRef`), storing type (`empty`, `source`, `tendril`, `connection`), color, opacity, and associated tendril/source IDs.
+-   **`Signal Emission` (`emitSignal`)**: Periodically called based on `signalInterval`. Sets `signalState` to `'propagating'` and `signalPosition` to 0 for tendrils connected to a source that are currently `'idle'`.
+-   **`Signal Propagation` (`propagateSignal`)**: Called each frame. Increments `signalPosition` for tendrils in `'propagating'` state. If a signal reaches the end of the `path`, state changes to `'reached_tip'`. If it hits a branch point, it attempts to start propagation on connected, idle branches.
+-   **`Growth Triggering` (`triggerGrowthAtTips`)**: Called each frame. Checks for tendrils that reached the tip (`'reached_tip'`) *in the current frame*. Calls `tryGrowTendril` for these tendrils and resets their `signalState` to `'idle'`.
+-   **`Growth Step` (`tryGrowTendril`)**: Attempts *one* step of growth from the tendril's current tip based on weighted random selection of valid neighboring cells. Considers direction weights, adjacency penalties. Called *only* by `triggerGrowthAtTips`.
+-   **`Branching` (`attemptBranching`)**: Probabilistically attempts to create a *new* tendril branching off from the *parent* tendril *after* a successful growth step in `tryGrowTendril`. New branches start with `signalState: 'idle'`.
+-   **`Path Verification` (`verifyPathIntegrity`, `verifyTendrilConnectivity`)**: Periodically checks if tendrils are still connected back to their source via their parent chain. Marks disconnected tendrils as `'fading'`.
+-   **`Fading` (`fadeTendrils`)**: Decreases opacity of tendrils in `'fading'` state each frame and removes them (along with grid cleanup) when opacity reaches zero.
+-   **`Connections` (`updateConnections`)**: Handles visual state for points where tendrils from different sources meet (needs review post-refactor).
+-   **`Regeneration` (`checkSourcesForRegeneration`)**: Logic to potentially restart growth from a source if all its tendrils have died out.
+
+## ⚠️ Current State & Next Steps (As of Refactor Pause)
+
+-   The major refactor to the signal-based model is **incomplete and currently broken**.
+-   Manual code replacement was used after automated edits failed.
+-   **Immediate Errors:** The simulation fails on startup with errors like `initializeSimulation is not defined` and subsequent potential errors like `canvas is not defined`. This indicates problems in the component's `useEffect` hook, initialization function calls, and likely how the canvas/context are being accessed.
+-   **Next Step:** Debug the initialization flow within the `useEffect` hook in `GameOfLifeCanvas.jsx` to resolve the runtime errors and get the simulation rendering again with the new signal logic foundation.

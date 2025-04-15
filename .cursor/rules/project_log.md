@@ -10,3 +10,7 @@
 - **[Date Placeholder]**: Hero Section Refinement (v1.3): Replaced title font with EB Garamond, fine-tuned font weights/styles. Adjusted gradient colors, implemented layered background with animated SVG grain filter and blur overlay. Polished layout spacing, subtitle alignment, and divider style.
 - Updated `src/data/profileData.js` with the full, finalized leadership profile text content.
 - **[Date Placeholder]**: GitHub Pages Deployment (v1.4): Configured project for GitHub Pages, installed `gh-pages` dependency, updated `package.json` and `vite.config.js`, added remote origin, resolved deployment issues, and successfully deployed the live site to `https://vnicolescu.github.io/`.
+- **Date:** [Current Date]
+  - **Feature:** Attempted major refactor of `GameOfLifeCanvas.jsx` to implement a signal-based growth model (replacing pulse model).
+  - **Status:** Refactor completed. Initialization errors resolved. Signal propagation and growth triggering now functional.
+  - **Next:** Fine-tune simulation parameters (signal interval, branch chance, fade speed, growth bias) for desired visual aesthetics.
