@@ -12,8 +12,8 @@ const FLASH_DURATION_FRAMES = 15;
 const MAX_BRANCH_ATTEMPTS = 5; // Reduce attempts to avoid hangs
 const SOURCE_REGENERATION_DELAY = 120; // Increase delay
 const MIN_PATH_LENGTH_FOR_BRANCHING = 5; // Increase slightly
-const BRANCH_ADJACENCY_IMMUNITY_STEPS = 5;
-const MAX_CELL_AGE = 1000; // Maximum age for color calculation (frames)
+const BRANCH_ADJACENCY_IMMUNITY_STEPS = 20; // Increased from 5 to 20
+const MAX_CELL_AGE = 200; // Reduced from 1000 to 200 for faster color transition
 const MIN_CONDUCTIVITY = 0.5; // Minimum conductivity multiplier for young cells
 const MAX_CONDUCTIVITY = 2.0; // Maximum conductivity multiplier for old cells
 
@@ -273,8 +273,11 @@ const GameOfLifeCanvas = () => {
         const isBranch = tendril.isBranch || tendril.isRegenerated;
         const age = frameCountRef.current - (tendril.creation || 0);
 
-        // Immunity for young branches
-        if (isBranch && age < BRANCH_ADJACENCY_IMMUNITY_STEPS) return false;
+        // Immunity for young branches - INCREASED from 5 to 20 (matches the constant)
+        if (isBranch && age < BRANCH_ADJACENCY_IMMUNITY_STEPS) {
+            // console.log(`Frame ${frameCountRef.current}: Branch ${tendril.id} has immunity from adjacency checks. Age: ${age}`);
+            return false; // Young branches are immune to adjacency checks
+        }
 
         // After immunity (or for main tendrils), check for problematic adjacency
         const adjacentCellsToCheck = [ [-1,-1], [0,-1], [1,-1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1] ];
@@ -294,10 +297,14 @@ const GameOfLifeCanvas = () => {
                  // For branches after immunity, only immediate self-overlap counts
                  if (isBranch) {
                      if (checkX === neighbor.x && checkY === neighbor.y){
+                         console.log(`Branch ${tendril.id} blocked by self-overlap at (${neighbor.x},${neighbor.y})`);
                          return true;
                      }
+                     // More lenient for branches - we only really care about direct overlaps
+                     return false;
                  } else {
                      // For main tendrils, be slightly more restrictive
+                      console.log(`Main tendril ${tendril.id} blocked by adjacency at (${neighbor.x},${neighbor.y}) to (${checkX},${checkY})`);
                      return true;
                  }
             }
@@ -308,17 +315,35 @@ const GameOfLifeCanvas = () => {
 
   // --- Signal Logic ---
     const emitSignal = () => {
+        console.log(`Frame ${frameCountRef.current}: Emitting signal from sources...`);
+        let emittedCount = 0;
+
         sourcesRef.current.forEach(source => {
             const rootTendrils = tendrilsRef.current.filter(t =>
                 t.sourceId === source.id && t.path.length > 0 &&
                 t.path[0].x === source.x && t.path[0].y === source.y &&
                 (t.state === 'growing' || t.state === 'connected') && t.signalState === 'idle'
             );
-            rootTendrils.forEach(tendril => {
-                tendril.signalState = 'propagating';
-                tendril.signalPosition = 0;
-            });
+
+            if (rootTendrils.length === 0) {
+                console.log(`No active root tendrils for source ${source.id}`);
+            } else {
+                rootTendrils.forEach(tendril => {
+                    console.log(`Emitting signal for Tendril ${tendril.id} from source ${source.id}. Path length: ${tendril.path.length}`);
+                    tendril.signalState = 'propagating';
+                    tendril.signalPosition = 0;
+                    tendril.fractionalPos = 0;
+                    emittedCount++;
+                });
+            }
         });
+
+        // Log emission summary
+        if (emittedCount > 0) {
+            console.log(`Emitted signals for ${emittedCount} tendrils.`);
+        } else {
+            console.log(`WARNING: No signals were emitted!`);
+        }
     };
 
     const propagateSignal = (deltaTime = 16.67) => { // Default to ~60 FPS if not specified
@@ -351,8 +376,8 @@ const GameOfLifeCanvas = () => {
             const conductivity = getConductivityFromAge(cell.age);
 
             // Calculate how far signal should travel this frame
-            // Base speed * conductivity * (milliseconds per frame / 1000) = cells per frame
-            const cellsToTravel = basePulseSpeed * conductivity * (deltaTime / 1000);
+            // Reduced speed factor for better visibility
+            const cellsToTravel = basePulseSpeed * conductivity * (deltaTime / 1500); // Slower to increase visibility
 
             // Fractional position tracking for smooth movement
             const fractionalPos = tendril.fractionalPos || currentSignalPos;
@@ -914,6 +939,14 @@ const GameOfLifeCanvas = () => {
       }
       visited.add(tendril.id);
 
+      // Young tendrils are always considered connected for integrity check
+      // This prevents premature disconnection of young branches
+      const age = frameCountRef.current - (tendril.creation || 0);
+      if (age < BRANCH_ADJACENCY_IMMUNITY_STEPS) {
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Young tendril ${tendril.id} (age ${age}) automatically verified.`);
+          return true;
+      }
+
       // Base case: Tendril starts at the source
       if (tendril.path.length > 0 && tendril.path[0].x === sourcePos.x && tendril.path[0].y === sourcePos.y) {
           console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril.id} VERIFIED as connected (starts at source).`);
@@ -924,9 +957,15 @@ const GameOfLifeCanvas = () => {
       console.log(`Frame ${frameCountRef.current}: VerifyConn - Checking connectivity for tendril ${tendril.id}, state: ${tendril.state}, isSource: ${tendril.path[0].x === sourcePos.x && tendril.path[0].y === sourcePos.y}, isBranch: ${tendril.isBranch}, parent: ${tendril.parentId}`);
 
       // IMPORTANT: Check tendril state immediately. If it's already fading/blocked, it's not connected
-      if (tendril.state === 'fading' || tendril.state === 'blocked') {
+      if (tendril.state === 'fading' || tendril.state === 'removed') {
           console.log(`Frame ${frameCountRef.current}: VerifyConn - Tendril ${tendril.id} is already ${tendril.state}, therefore not connected.`);
           return false;
+      }
+
+      // If it's blocked, we still consider it connected as long as it's not too old (give it a chance)
+      if (tendril.state === 'blocked' && age < MAX_CELL_AGE/2) {
+          console.log(`Frame ${frameCountRef.current}: VerifyConn - Blocked tendril ${tendril.id} still considered connected (age: ${age})`);
+          return true;
       }
 
       // Recursive case: Check if parent is connected
@@ -937,10 +976,18 @@ const GameOfLifeCanvas = () => {
               return false; // Parent gone
           }
 
-          // CHECK: Is the parent already marked as fading or blocked?
-          if (parentTendril.state === 'fading' || parentTendril.state === 'blocked') {
+          // CHECK: Is the parent already marked as fading or removed?
+          if (parentTendril.state === 'fading' || parentTendril.state === 'removed') {
               console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} of ${tendril.id} is ${parentTendril.state}. Branch not connected.`);
               return false;
+          }
+
+          // Be more lenient with connected/blocked parents
+          if (parentTendril.state === 'connected' || parentTendril.state === 'blocked') {
+              if (age < MAX_CELL_AGE/2) {
+                  console.log(`Frame ${frameCountRef.current}: VerifyConn - Branch ${tendril.id} connected to ${parentTendril.state} parent ${parentTendril.id} (age: ${age})`);
+                  return true;
+              }
           }
 
           // Check if branch point exists in parent path
@@ -948,6 +995,17 @@ const GameOfLifeCanvas = () => {
           const parentContainsBranchPoint = parentTendril.path.some(p => p.x === branchPoint.x && p.y === branchPoint.y);
 
           if (!parentContainsBranchPoint) {
+              // More lenient - allow approximate matches
+              const approxMatch = parentTendril.path.some(p =>
+                  Math.abs(p.x - branchPoint.x) <= 1 && Math.abs(p.y - branchPoint.y) <= 1
+              );
+
+              if (approxMatch) {
+                  console.log(`Frame ${frameCountRef.current}: VerifyConn - Found approximate branch point match for ${tendril.id}`);
+                  // Since parent approximately contains branch point, check if parent is connected
+                  return verifyTendrilConnectivity(parentTendril, sourcePos, visited);
+              }
+
               console.log(`Frame ${frameCountRef.current}: VerifyConn - Parent ${parentTendril.id} doesn't contain branch point (${branchPoint.x},${branchPoint.y}) for branch ${tendril.id}. Not connected.`);
               return false;
           }
@@ -1114,8 +1172,8 @@ const GameOfLifeCanvas = () => {
 
     // Helper function to update cell ages periodically
     const updateCellAges = () => {
-        // Only update every 10 frames to save performance
-        if (frameCountRef.current % 10 !== 0) return;
+        // Only update every 5 frames to save performance - CHANGED from 10 to 5
+        if (frameCountRef.current % 5 !== 0) return;
 
         // Count how many cells were updated
         let updatedCells = 0;
@@ -1125,7 +1183,8 @@ const GameOfLifeCanvas = () => {
             for (let x = 0; x < gridDimensions.current.width; x++) {
                 const cell = gridRef.current[y][x];
                 if (cell && cell.type !== 'empty' && cell.age < MAX_CELL_AGE) {
-                    cell.age += 1;
+                    // Increase aging by 2 instead of 1 for faster color changes
+                    cell.age += 2;
 
                     // Only update color if it's a tendril cell (not source/connection)
                     if (cell.type === 'tendril') {
@@ -1136,11 +1195,6 @@ const GameOfLifeCanvas = () => {
                 }
             }
         }
-
-        // Optionally log stats (uncomment for debugging)
-        // if (updatedCells > 0) {
-        //     console.log(`Frame ${frameCountRef.current}: Updated age for ${updatedCells} cells`);
-        // }
     };
 
   // --- Animation Loop ---
@@ -1266,11 +1320,36 @@ const GameOfLifeCanvas = () => {
          context.globalAlpha = 1.0;
          tendrilsRef.current.forEach(tendril => {
              if (tendril.signalState === 'propagating' && tendril.signalPosition >= 0 && tendril.signalPosition < tendril.path.length) {
+                 // Make signal more visible by drawing multiple cells (pulse head + tail)
                  const signalCoord = tendril.path[tendril.signalPosition];
+
+                 // Draw the signal at current position
                  if (isWithinBounds(signalCoord.x, signalCoord.y)) {
                      context.fillStyle = SIGNAL_COLOR; // White signal color
-                     context.globalAlpha = tendril.opacity; // Use tendril opacity
+                     context.globalAlpha = tendril.opacity * 1.0; // Full brightness for head
                      context.fillRect(signalCoord.x * CELL_SIZE, signalCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+
+                     // Draw signal "tail" (1-2 cells behind the current position)
+                     // Only if we're not at the start of the path
+                     if (tendril.signalPosition > 0) {
+                         // Draw one cell behind at 70% opacity
+                         const tailPos1 = Math.max(0, tendril.signalPosition - 1);
+                         const tailCoord1 = tendril.path[tailPos1];
+                         if (isWithinBounds(tailCoord1.x, tailCoord1.y)) {
+                             context.globalAlpha = tendril.opacity * 0.7; // Dimmer for tail
+                             context.fillRect(tailCoord1.x * CELL_SIZE, tailCoord1.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                         }
+
+                         // Draw two cells behind at 40% opacity
+                         if (tendril.signalPosition > 1) {
+                             const tailPos2 = Math.max(0, tendril.signalPosition - 2);
+                             const tailCoord2 = tendril.path[tailPos2];
+                             if (isWithinBounds(tailCoord2.x, tailCoord2.y)) {
+                                 context.globalAlpha = tendril.opacity * 0.4; // Even dimmer for end of tail
+                                 context.fillRect(tailCoord2.x * CELL_SIZE, tailCoord2.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                             }
+                         }
+                     }
                  }
              }
          });
