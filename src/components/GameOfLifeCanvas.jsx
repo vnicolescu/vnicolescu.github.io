@@ -5,19 +5,19 @@ const CELL_SIZE = 4;
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1;
 const PULSE_LENGTH = 3;
-const DEFAULT_PULSE_GENERATION_INTERVAL = 12;
+const DEFAULT_PULSE_GENERATION_INTERVAL = 30; // Slower pulse generation
 const DEFAULT_PULSE_ADVANCE_INTERVAL = 1;
-const DEFAULT_PULSE_SPEED_FACTOR = 5;
-const MAX_PULSE_SPEED_FACTOR = 50;
+const DEFAULT_PULSE_SPEED_FACTOR = 3; // Slower pulse speed
+const MAX_PULSE_SPEED_FACTOR = 10; // Lower max speed
 const DEFAULT_BRANCH_CHANCE = 0.15;
-const DEFAULT_FADE_SPEED = 0.005; // *** DRASTICALLY REDUCED fade speed ***
+const DEFAULT_FADE_SPEED = 0.005;
 const FLASH_DURATION_FRAMES = 15;
 const MAX_BRANCH_ATTEMPTS = 20;
 const SOURCE_REGENERATION_DELAY = 60;
 const MIN_PATH_LENGTH_FOR_BRANCHING = 3;
 const ADJACENCY_PENALTY_RADIUS_MAIN = 1;
 const ADJACENCY_PENALTY_RADIUS_BRANCH = 0;
-const BRANCH_ADJACENCY_IMMUNITY_STEPS = 5; // Branch ignores adjacency for first 5 steps
+const BRANCH_ADJACENCY_IMMUNITY_STEPS = 5;
 
 // Colors (using your palette)
 const SOURCE_COLOR = '#6366F1'; // Indigo Flame from palette
@@ -208,9 +208,9 @@ const GameOfLifeCanvas = () => {
   const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // Default Weights (now for relative directions) - EXTREME forward bias for survival
+  // Default Weights (now for relative directions) - Moderate forward bias
   // Order: FL, F, FR, L, Center(unused), R, BL, B, BR
-  const [directionWeights, setDirectionWeights] = useState([1.0, 3.5, 1.0, 0.2, 0, 0.2, 0, 0, 0]);
+  const [directionWeights, setDirectionWeights] = useState([1.0, 2.0, 1.0, 0.5, 0, 0.5, 0, 0, 0]);
 
   // Track source states for regeneration
   const sourceStatesRef = useRef({});
@@ -609,41 +609,48 @@ const GameOfLifeCanvas = () => {
 
     // --- Verification of path integrity from source ---
     const verifyPathIntegrity = () => {
-      // For each tendril, verify that it has a continuous path from its source
-      const tendrilsToDisconnect = [];
+        console.log(`DEBUG: Frame ${frameCountRef.current} - Verifying path integrity for ${tendrilsRef.current.length} tendrils.`);
+        const tendrilsToDisconnect = [];
 
-      tendrilsRef.current.forEach((tendril, index) => {
-        // Skip tendrils already fading/blocked/disconnected
-        if (tendril.state !== 'growing' && tendril.state !== 'connected') {
-          return;
+        tendrilsRef.current.forEach((tendril, index) => {
+            // Skip tendrils already fading/blocked/disconnected
+            if (tendril.state !== 'growing' && tendril.state !== 'connected') {
+                return;
+            }
+
+            // Find the source for this tendril
+            const sourceId = tendril.sourceId;
+            const source = sourcesRef.current.find(s => s.id === sourceId);
+            if (!source) {
+                console.warn(`Tendril ${tendril.id} has invalid source ${sourceId}, disconnecting`); // Changed to warn
+                tendrilsToDisconnect.push(index);
+                return;
+            }
+
+            // Check if the path is continuous from source to tip
+            const isConnected = verifyTendrilConnectivity(tendril, source);
+            if (!isConnected) {
+                console.warn(`Tendril ${tendril.id} FAILED connectivity check, marking as disconnected`); // Changed to warn
+                tendrilsToDisconnect.push(index);
+            } else {
+                // console.log(`Tendril ${tendril.id} PASSED connectivity check.`); // Optional: uncomment for positive checks
+            }
+        });
+
+        // Mark disconnected tendrils for fading
+        if (tendrilsToDisconnect.length > 0) {
+             console.warn(`Disconnecting ${tendrilsToDisconnect.length} tendrils.`);
+             tendrilsToDisconnect.forEach(index => {
+                const tendril = tendrilsRef.current[index];
+                if (tendril) { // Check if tendril still exists
+                    tendril.state = 'fading';
+                    tendril.opacity = Math.min(tendril.opacity, 0.3); // Start fading immediately
+                }
+             });
         }
 
-        // Find the source for this tendril
-        const sourceId = tendril.sourceId;
-        const source = sourcesRef.current.find(s => s.id === sourceId);
-        if (!source) {
-          console.log(`Tendril ${tendril.id} has invalid source ${sourceId}, disconnecting`);
-          tendrilsToDisconnect.push(index);
-          return;
-        }
-
-        // Check if the path is continuous from source to tip
-        const isConnected = verifyTendrilConnectivity(tendril, source);
-        if (!isConnected) {
-          console.log(`Tendril ${tendril.id} is disconnected from source ${sourceId}, marking as disconnected`);
-          tendrilsToDisconnect.push(index);
-        }
-      });
-
-      // Mark disconnected tendrils for fading
-      tendrilsToDisconnect.forEach(index => {
-        const tendril = tendrilsRef.current[index];
-        tendril.state = 'fading';
-        tendril.opacity = Math.min(tendril.opacity, 0.3); // Start fading immediately
-      });
-
-      // Check if sources have no active tendrils and regenerate if needed
-      checkSourcesForRegeneration();
+        // Check if sources have no active tendrils and regenerate if needed
+        checkSourcesForRegeneration();
     };
 
     // Helper to verify tendril is connected to its source
@@ -1407,142 +1414,83 @@ const GameOfLifeCanvas = () => {
         if (!context || !gridRef.current?.length) return;
         context.clearRect(0, 0, canvas.width, canvas.height);
 
-        // 1. Draw Grid Background & Static Elements
+        // 1. Draw Grid Background & Static Elements (Base Tendril Colors)
         for (let y = 0; y < gridHeight; y++) {
             for (let x = 0; x < gridWidth; x++) {
                 const cell = gridRef.current[y]?.[x];
                 if (!cell) continue;
 
-                // Handle branch points specially - mark them in a different color to make branches visible
+                let drawColor = cell.color; // Start with grid color
+
+                // Handle branch points transitioning color
                 if (cell.isBranchPoint) {
-                    // Calculate how long the branch point has existed
                     const branchAge = frameCountRef.current - (cell.branchTime || 0);
                     const branchVisibleDuration = cell.branchVisibleDuration || 30;
-
-                    // If the branch point is old enough, start transitioning its color to normal
-                    if (branchAge > branchVisibleDuration) {
-                        // Transition from white to tendril color over time
+                    if (branchAge <= branchVisibleDuration) {
+                        drawColor = '#FFFFFF'; // Highlight phase
+                    } else {
                         const transitionProgress = Math.min(1, (branchAge - branchVisibleDuration) / 20);
-
-                        // Mix colors from white to tendril blue based on transition progress
                         const r = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(1, 3), 16) * transitionProgress);
                         const g = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(3, 5), 16) * transitionProgress);
                         const b = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(5, 7), 16) * transitionProgress);
-
-                        // Set color to this interpolated value
-                        context.fillStyle = `rgb(${r}, ${g}, ${b})`;
-
-                        // If fully transitioned, remove branch point flag to simplify future rendering
-                        if (transitionProgress >= 0.99) {
-                            gridRef.current[y][x] = {
-                                ...cell,
-                                isBranchPoint: false,
-                                color: TENDRIL_COLOR
-                            };
-                        }
-                    } else {
-                        // Branch point is still in highlight phase
-                        context.fillStyle = '#FFFFFF'; // White for branch points
+                        drawColor = `rgb(${r}, ${g}, ${b})`;
+                        // Check if transitioned fully (optional, handled in logic elsewhere now)
+                        // if (transitionProgress >= 0.99) { /* Flag removal handled elsewhere */ }
                     }
-
-                    context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                    continue; // Skip normal processing for branch points
                 }
+                 // Handle fading tendrils
+                 else if (cell.type === 'tendril' && cell.opacity < 1) {
+                    // Interpolate color towards background based on opacity
+                    const baseColor = parseInt(TENDRIL_COLOR.slice(1), 16);
+                    const bgColor = parseInt(BACKGROUND_COLOR.slice(1), 16);
+                    const baseR = (baseColor >> 16) & 255; const baseG = (baseColor >> 8) & 255; const baseB = baseColor & 255;
+                    const bgR = (bgColor >> 16) & 255; const bgG = (bgColor >> 8) & 255; const bgB = bgColor & 255;
+                    const r = Math.round(baseR * cell.opacity + bgR * (1 - cell.opacity));
+                    const g = Math.round(baseG * cell.opacity + bgG * (1 - cell.opacity));
+                    const b = Math.round(baseB * cell.opacity + bgB * (1 - cell.opacity));
+                    drawColor = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).padStart(6, '0')}`;
+                 }
 
-                context.fillStyle = cell.color;
+                context.fillStyle = drawColor;
                 context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
             }
         }
 
-        // 2. Draw Tendrils (Overlaying Pulses and Fading)
-        tendrilsRef.current.forEach(tendril => {
-            const pathLength = tendril.path.length;
-            if (tendril.opacity <= 0) return;
-
-            context.globalAlpha = tendril.opacity;
-
-            for (let i = 0; i < pathLength; i++) {
-                const cellCoord = tendril.path[i];
-                // Boundary check for coordinates
-                if (cellCoord.y < 0 || cellCoord.y >= gridHeight || cellCoord.x < 0 || cellCoord.x >= gridWidth) continue;
-
-                const gridCell = gridRef.current[cellCoord.y]?.[cellCoord.x];
-
-                // Skip cells that don't exist, don't belong to this tendril, or are connections
-                // Note: Handle cells that could belong to multiple tendrils (at branch points)
-                if (!gridCell) continue;
-
-                // For connections, we'll handle them separately
-                if (gridCell.type === 'connection') continue;
-
-                // For sources, always show them
-                if (gridCell.type === 'source') {
-                    // Continue with drawing
-                }
-                // For regular tendrils, check if this tendril ID is included
-                else {
-                    // The tendrilId might be a single ID or a comma-separated list at branch points
-                    const tendrilIds = gridCell.tendrilId ? gridCell.tendrilId.split(',') : [];
-                    if (!tendrilIds.includes(tendril.id)) {
-                        continue; // Skip cells that don't belong to this tendril
-                    }
-                }
-
-                let drawColor = gridCell.color;
-
-                // Handle special drawing for branch points
-                if (gridCell.isBranchPoint) {
-                    drawColor = '#FFFFFF'; // White for branch points
-                }
-                // Regular tendril drawing logic
-                else if (tendril.state === 'growing' && tendril.opacity > 0.1) {
-                    const distanceFromEnd = pathLength - 1 - i;
-                    if (distanceFromEnd === 0 && pathLength > 1) drawColor = PULSE_BRIGHT_COLOR;
-                    else if (distanceFromEnd === 1 && pathLength > 2) drawColor = PULSE_MID_COLOR;
-                    else if (distanceFromEnd === 2 && pathLength > 3) drawColor = PULSE_DIM_COLOR;
-                }
-                // Fading/blocked/collided state drawing
-                else if (tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
-                      // Color is already set to FADING_COLOR by the fadeTendrils logic via gridUpdates
-                      // We just need to respect the opacity
-                 }
-
-                context.fillStyle = drawColor;
-                context.fillRect(cellCoord.x * CELL_SIZE, cellCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            }
-             context.globalAlpha = 1.0;
-        });
-
-        // *** NEW: 3. Draw Pulses (Leading Edge Orange) ***
-        context.globalAlpha = 1.0;
+        // 2. Draw Pulses (Overlaying the base grid)
+        context.globalAlpha = 1.0; // Reset alpha for pulses
         pulsesRef.current.forEach(pulse => {
             const tendril = findTendrilById(pulse.tendrilId);
+            // Ensure tendril exists and is not fully faded
             if (!tendril || tendril.opacity <= 0) return;
 
             for (let i = 0; i < PULSE_LENGTH; i++) {
                 const pulseSegmentPos = pulse.position - i;
                 if (pulseSegmentPos >= 0 && pulseSegmentPos < tendril.path.length) {
                     const cellCoord = tendril.path[pulseSegmentPos];
+
+                    // Boundary check for coordinates
                     if (cellCoord.y < 0 || cellCoord.y >= gridHeight || cellCoord.x < 0 || cellCoord.x >= gridWidth) continue;
+
+                    // Verify the cell on the grid still belongs to this tendril (important for path check)
                     const gridCell = gridRef.current[cellCoord.y]?.[cellCoord.x];
+                    const cellTendrilIds = gridCell?.tendrilId ? gridCell.tendrilId.split(',') : [];
 
-                    if (gridCell && (gridCell.type === 'source' || gridCell.tendrilId === tendril.id) && gridCell.type !== 'connection') {
+                    if (gridCell && (gridCell.type === 'source' || cellTendrilIds.includes(tendril.id)) && gridCell.type !== 'connection') {
                          let pulseColor;
-                         // *** Corrected Pulse Color Logic ***
-                         if (i === 0) pulseColor = CONNECTION_COLOR; // Leading edge is Orange/Amber
-                         else if (i === 1) pulseColor = PULSE_BRIGHT_COLOR; // First trail segment is bright white
-                         else pulseColor = PULSE_MID_COLOR; // Second trail segment is dimmer white/gray
+                         // Pulse Color Logic: Leading edge orange, trail white
+                         if (i === 0) pulseColor = CONNECTION_COLOR; // Leading edge Orange/Amber
+                         else if (i === 1) pulseColor = PULSE_BRIGHT_COLOR; // White
+                         else pulseColor = PULSE_MID_COLOR; // Dimmer white
 
-                         context.globalAlpha = tendril.opacity;
+                         context.globalAlpha = tendril.opacity; // Use tendril opacity for pulse too
                          context.fillStyle = pulseColor;
                          context.fillRect(cellCoord.x * CELL_SIZE, cellCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                         context.globalAlpha = 1.0;
+                         context.globalAlpha = 1.0; // Reset alpha after drawing segment
                     }
                 }
             }
         });
     };
-
 
     // --- Animation Loop (Using Pulse Speed Factor) ---
     const render = () => {
@@ -1677,13 +1625,13 @@ const GameOfLifeCanvas = () => {
        <div className="absolute bottom-4 left-4 flex space-x-6">
            {/* Parameter Sliders */}
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
-                 {/* Pulse Interval Slider */}
+                 {/* Pulse Interval Slider - Updated Range/Default */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseGen" className="flex-1">Pulse Interval:</label>
-                   <input type="range" id="pulseGen" min="5" max="120" step="1" value={pulseGenerationInterval} onChange={(e) => setPulseGenerationInterval(Number(e.target.value))} className="w-20 mx-2" />
+                   <input type="range" id="pulseGen" min="10" max="60" step="1" value={pulseGenerationInterval} onChange={(e) => setPulseGenerationInterval(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{pulseGenerationInterval}</span>
                  </div>
-                 {/* Pulse Speed Slider */}
+                 {/* Pulse Speed Slider - Updated Range/Default */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseSpeedFactor" className="flex-1">Pulse Speed:</label>
                    <input
