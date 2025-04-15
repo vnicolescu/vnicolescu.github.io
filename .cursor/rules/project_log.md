@@ -39,12 +39,14 @@
   - **Status:** Work-in-progress, simulation remains unstable. Branching and overall stability need further debugging.
   - **Next:** Stabilize simulation, refine branching, implement path optimization/reabsorption.
 
-- **[Date: 2024-06-09]**: Survival Branching Robustness & Signal Propagation Fix (Merged)
-  - **Feature:** Signals now reliably propagate through branch points, enabling true tree-like and neural network growth.
-  - **Improvements:**
-    - Fixed coordinate mismatch bug in branch signal propagation.
-    - Added approximate matching for branch points (robust to grid/rounding errors).
-    - Enhanced logging and code comments for future debugging and maintainability.
-    - Confirmed stable survival, food, and energy mechanics.
-    - All UI controls and visual feedback working as intended.
-  - **Status:** Stable baseline for GOL Survival simulation with robust branching and resource mechanics.
+- **2024-06-10**: Survival + Branching Mechanics Stabilized (Branch: `feature/survival-mechanics-wip`)
+  - **Feature:** Robust branch signal propagation and survival mechanics finalized.
+  - **Achievements:**
+    - Fixed bug where signals would not propagate into new branches due to coordinate mismatches.
+    - Added approximate matching for branch points, making branching robust to minor grid or floating-point errors.
+    - Confirmed stable, tree-like and neural network growth patterns with signals propagating through all branches.
+    - Survival mechanics (energy, food, fading, reabsorption) fully functional and visually clear.
+    - UI controls and visual feedback confirmed working as intended.
+    - Improved code comments and logging for future maintainability.
+  - **Status:** Stable baseline for further enhancements (e.g., path optimization, environmental influences).
+  - **Next:** Merge to main, consider milestone tag, and plan next feature set.
