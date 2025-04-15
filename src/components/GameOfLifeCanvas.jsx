@@ -56,6 +56,14 @@ let tendrilCounter = 0;
 const getUniqueTendrilId = (sourceId) => `t-${sourceId}-${tendrilCounter++}`;
 const getRandomInt = (max) => Math.floor(Math.random() * max);
 
+// Helper for hex parsing
+const parseHex = (hex) => {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return [r, g, b];
+};
+
 // --- LocalStorage Helpers ---
 const STORAGE_KEY = 'gameOfLifeSettings';
 
@@ -1104,6 +1112,36 @@ const GameOfLifeCanvas = () => {
         });
     };
 
+    // Helper function to update cell ages periodically
+    const updateCellAges = () => {
+        // Only update every 10 frames to save performance
+        if (frameCountRef.current % 10 !== 0) return;
+
+        // Count how many cells were updated
+        let updatedCells = 0;
+
+        // Update ages for all non-empty cells in the grid
+        for (let y = 0; y < gridDimensions.current.height; y++) {
+            for (let x = 0; x < gridDimensions.current.width; x++) {
+                const cell = gridRef.current[y][x];
+                if (cell && cell.type !== 'empty' && cell.age < MAX_CELL_AGE) {
+                    cell.age += 1;
+
+                    // Only update color if it's a tendril cell (not source/connection)
+                    if (cell.type === 'tendril') {
+                        cell.color = getColorFromAge(cell.age);
+                    }
+
+                    updatedCells++;
+                }
+            }
+        }
+
+        // Optionally log stats (uncomment for debugging)
+        // if (updatedCells > 0) {
+        //     console.log(`Frame ${frameCountRef.current}: Updated age for ${updatedCells} cells`);
+        // }
+    };
 
   // --- Animation Loop ---
    const render = (timestamp) => { // Receive high-resolution timestamp
@@ -1237,14 +1275,6 @@ const GameOfLifeCanvas = () => {
              }
          });
          context.globalAlpha = 1.0; // Reset global alpha
-    };
-
-    // Helper for hex parsing
-    const parseHex = (hex) => {
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        return [r, g, b];
     };
 
   // --- Initialization and Cleanup ---
