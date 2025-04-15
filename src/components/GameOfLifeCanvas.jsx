@@ -204,7 +204,7 @@ const GameOfLifeCanvas = () => {
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
   // Default Weights (now for relative directions)
   // Order: FL, F, FR, L, Center(unused), R, BL, B, BR
-  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.2, 0, 0.2, 0, 0, 0]);
+  const [directionWeights, setDirectionWeights] = useState([0.7, 2.0, 0.7, 0.4, 0, 0.4, 0, 0, 0]);
 
   // Use refs to hold the current state values
   const simParamsRef = useRef({
@@ -527,7 +527,146 @@ const GameOfLifeCanvas = () => {
         }
     };
 
-    // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
+    // --- Verification of path integrity from source ---
+    const verifyPathIntegrity = () => {
+      // For each tendril, verify that it has a continuous path from its source
+      const tendrilsToDisconnect = [];
+
+      tendrilsRef.current.forEach((tendril, index) => {
+        // Skip tendrils already fading/blocked/disconnected
+        if (tendril.state !== 'growing' && tendril.state !== 'connected') {
+          return;
+        }
+
+        // Find the source for this tendril
+        const sourceId = tendril.sourceId;
+        const source = sourcesRef.current.find(s => s.id === sourceId);
+        if (!source) {
+          console.log(`Tendril ${tendril.id} has invalid source ${sourceId}, disconnecting`);
+          tendrilsToDisconnect.push(index);
+          return;
+        }
+
+        // Check if the path is continuous from source to tip
+        const isConnected = verifyTendrilConnectivity(tendril, source);
+        if (!isConnected) {
+          console.log(`Tendril ${tendril.id} is disconnected from source ${sourceId}, marking as disconnected`);
+          tendrilsToDisconnect.push(index);
+        }
+      });
+
+      // Mark disconnected tendrils for fading
+      tendrilsToDisconnect.forEach(index => {
+        const tendril = tendrilsRef.current[index];
+        tendril.state = 'fading';
+        tendril.opacity = Math.min(tendril.opacity, 0.3); // Start fading immediately
+      });
+
+      // Check if sources have no active tendrils and regenerate if needed
+      checkSourcesForRegeneration();
+    };
+
+    // Helper to verify tendril is connected to its source
+    const verifyTendrilConnectivity = (tendril, source) => {
+      // If the path is empty, it's not connected
+      if (!tendril.path.length) return false;
+
+      // First cell should be at source position
+      const firstCell = tendril.path[0];
+      if (firstCell.x !== source.x || firstCell.y !== source.y) {
+        return false;
+      }
+
+      // Check that all consecutive cells are adjacent
+      for (let i = 1; i < tendril.path.length; i++) {
+        const prevCell = tendril.path[i-1];
+        const currCell = tendril.path[i];
+
+        // Calculate Manhattan distance (should be 1 or sqrt(2) for diagonals)
+        const dx = Math.abs(currCell.x - prevCell.x);
+        const dy = Math.abs(currCell.y - prevCell.y);
+
+        // If cells aren't adjacent, path is broken
+        if (dx > 1 || dy > 1) {
+          return false;
+        }
+
+        // Check that the cell at this position in the grid belongs to this tendril
+        const gridCell = gridRef.current[currCell.y]?.[currCell.x];
+        if (!gridCell) return false;
+
+        // The cell might be a branch point (shared), so we need to check if tendril ID is in the comma-separated list
+        const cellTendrilIds = gridCell.tendrilId ? gridCell.tendrilId.split(',') : [];
+        if (!cellTendrilIds.includes(tendril.id)) {
+          return false;
+        }
+      }
+
+      // All checks passed, tendril is connected
+      return true;
+    };
+
+    // Check if sources need to regenerate new tendrils
+    const checkSourcesForRegeneration = () => {
+      sourcesRef.current.forEach(source => {
+        // Count active tendrils for this source
+        const activeTendrilCount = tendrilsRef.current.filter(t =>
+          t.sourceId === source.id && (t.state === 'growing' || t.state === 'connected')
+        ).length;
+
+        // If no active tendrils, create a new one from the source
+        if (activeTendrilCount === 0) {
+          console.log(`Source ${source.id} has no active tendrils, regenerating`);
+          regenerateTendrilFromSource(source);
+        }
+      });
+    };
+
+    // Create a new tendril from a source
+    const regenerateTendrilFromSource = (source) => {
+      const { x, y, id: sourceId } = source;
+
+      // Check if the source position is still valid
+      if (!isWithinBounds(x, y, gridWidth, gridHeight)) {
+        console.warn(`Source ${sourceId} position (${x},${y}) is out of bounds, can't regenerate`);
+        return;
+      }
+
+      const tendrilId = getUniqueTendrilId(sourceId);
+
+      // Initialize a new tendril at the source
+      const newTendril = {
+        id: tendrilId,
+        sourceId: sourceId,
+        path: [{ x, y }],
+        state: 'growing',
+        pulsePosition: 0,
+        opacity: 1,
+        isRegenerated: true // Mark as regenerated for tracking
+      };
+
+      // Add to tendrils list
+      tendrilsRef.current.push(newTendril);
+
+      // Update grid cell
+      if (gridRef.current[y]?.[x]) {
+        // Only update tendrilId if needed - source might already have this property
+        if (!gridRef.current[y][x].tendrilId) {
+          gridRef.current[y][x].tendrilId = tendrilId;
+        }
+      }
+
+      // Add initial pulse to start growth
+      pulsesRef.current.push({
+        id: getUniquePulseId(),
+        tendrilId: tendrilId,
+        position: 0
+      });
+
+      console.log(`Created regenerated tendril ${tendrilId} for source ${sourceId}`);
+    };
+
+    // --- RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
         const gridUpdates = new Map();
         const newBranches = [];
@@ -600,35 +739,20 @@ const GameOfLifeCanvas = () => {
                  }
              });
 
-             // GROWTH ENHANCEMENT: For branches, enhance the chance to grow away from the parent path
-             // This helps branches look more visually distinct
-             if (tendril.isBranch && tendril.path.length < 5) {
-                 // If we're just starting to grow a branch, adjust weights to encourage divergence
-                 // from the parent tendril
+             // BRANCH SURVIVAL IMPROVEMENT: For branches, increase forward momentum
+             // This helps them avoid getting stuck or self-colliding
+             if ((tendril.isBranch || tendril.isRegenerated) && weight > 0) {
+                 // Calculate a momentum factor based on path length
+                 // Longer branches should move more purposefully
+                 const momentumFactor = Math.min(1.5, 0.5 + (tendril.path.length / 30));
 
-                 // Let's find the parent tendril first
-                 const parentId = tendril.parentId;
-                 const parentTendril = parentId ? tendrilsRef.current.find(t => t.id === parentId) : null;
+                 // Get the tendril's current direction
+                 // const lastMoveDir already defined above
 
-                 if (parentTendril) {
-                     // Get the last few segments of the parent to determine its recent direction
-                     const parentRecent = parentTendril.path.slice(-3);
-                     if (parentRecent.length >= 2) {
-                         // Calculate parent's recent direction
-                         const parentEndPoint = parentRecent[parentRecent.length - 1];
-                         const parentPrevPoint = parentRecent[parentRecent.length - 2];
-
-                         const parentDx = parentEndPoint.x - parentPrevPoint.x;
-                         const parentDy = parentEndPoint.y - parentPrevPoint.y;
-
-                         // If the neighbor is perpendicular to parent direction, boost its weight
-                         // This creates branches that tend to grow out to the sides
-                         if ((parentDx !== 0 && dy !== 0 && dx === 0) ||
-                             (parentDy !== 0 && dx !== 0 && dy === 0)) {
-                             weight *= 3.0; // Triple the weight for perpendicular directions
-                             console.log(`Branch ${tendril.id}: Boosting perpendicular direction ${dx},${dy} to weight ${weight}`);
-                         }
-                     }
+                 // If this neighbor continues in roughly the same direction, boost its weight
+                 if (Math.sign(dx) === Math.sign(lastMoveDir.dx) &&
+                     Math.sign(dy) === Math.sign(lastMoveDir.dy)) {
+                     weight *= momentumFactor;
                  }
              }
 
@@ -1206,6 +1330,11 @@ const GameOfLifeCanvas = () => {
           safeExecute(advancePulses);
           safeExecute(fadeTendrils);
           safeExecute(updateConnections);
+
+          // Every 30 frames, verify tendril path integrity
+          if (frameCountRef.current % 30 === 0) {
+            safeExecute(verifyPathIntegrity);
+          }
 
           safeExecute(drawGridAndElements);
 
