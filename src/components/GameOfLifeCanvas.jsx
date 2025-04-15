@@ -195,6 +195,7 @@ const GameOfLifeCanvas = () => {
   const connectionsRef = useRef([]);
   const pulsesRef = useRef([]);
   const frameCountRef = useRef(0);
+  const [error, setError] = useState(null); // Add error state
 
   // --- State for Simulation Parameters ---
   const [pulseGenerationInterval, setPulseGenerationInterval] = useState(DEFAULT_PULSE_GENERATION_INTERVAL);
@@ -226,6 +227,24 @@ const GameOfLifeCanvas = () => {
     // Update dependencies
   }, [pulseGenerationInterval, pulseSpeedFactor, branchChance, fadeSpeed, directionWeights]);
 
+  // CRITICAL SAFETY: Check if a coordinate is within the grid boundaries
+  const isWithinBounds = (x, y, gridW, gridH) => {
+    const width = gridW || (gridRef.current?.[0]?.length || 0);
+    const height = gridH || (gridRef.current?.length || 0);
+    return x >= 0 && x < width && y >= 0 && y < height;
+  };
+
+  // --- Try-catch wrapper for simulation functions ---
+  const safeExecute = (fn, ...args) => {
+    try {
+      return fn(...args);
+    } catch (e) {
+      console.error("Simulation error:", e);
+      setError(`Error: ${e.message}`);
+      return null;
+    }
+  };
+
   // Helper to get neighbors (Check for existing connections)
   const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId) => {
     const neighbors = { empty: [], collision: [], selfCollision: [] }; // Add selfCollision key
@@ -239,7 +258,7 @@ const GameOfLifeCanvas = () => {
         const ny = y + dy;
 
         // CRITICAL: Strict boundary check - skip if out of bounds
-        if (!isWithinBounds(nx, ny)) continue;
+        if (!isWithinBounds(nx, ny, gridWidth, gridHeight)) continue;
 
         const cell = gridRef.current[ny]?.[nx];
         if (!cell) continue;
@@ -276,55 +295,71 @@ const GameOfLifeCanvas = () => {
     let animationFrameId = null; // Declare animationFrameId here
 
     const initializeSimulation = () => {
-        canvas.width = window.innerWidth - 40;
-        canvas.height = window.innerHeight - 40;
-        gridWidth = Math.floor(canvas.width / CELL_SIZE);
-        gridHeight = Math.floor(canvas.height / CELL_SIZE);
+        try {
+            // Make sure canvas size is reasonable for the browser
+            const maxWidth = Math.min(window.innerWidth - 40, 2000); // Limit max width
+            const maxHeight = Math.min(window.innerHeight - 40, 1500); // Limit max height
 
-        // Reset state for fresh start
-        tendrilCounter = 0;
-        pulseCounter = 0;
-        frameCountRef.current = 0;
-        gridRef.current = Array(gridHeight).fill(null).map(() =>
-            Array(gridWidth).fill({ type: 'empty', color: BACKGROUND_COLOR })
-        );
-        sourcesRef.current = [];
-        tendrilsRef.current = [];
-        connectionsRef.current = [];
-        pulsesRef.current = []; // Reset pulses
+            canvas.width = maxWidth;
+            canvas.height = maxHeight;
 
-        // Initialize Sources and Initial Tendrils
-        for (let i = 0; i < NUM_SOURCES; i++) {
-            let x, y, attempts = 0;
-            do {
-                x = getRandomInt(gridWidth);
-                y = getRandomInt(gridHeight);
-                attempts++;
-            } while (
-                (gridRef.current[y]?.[x]?.type !== 'empty' ||
-                 sourcesRef.current.some(s => Math.abs(s.x - x) < 10 && Math.abs(s.y - y) < 10)) && // Increased spacing
-                 attempts < 100
+            gridWidth = Math.floor(canvas.width / CELL_SIZE);
+            gridHeight = Math.floor(canvas.height / CELL_SIZE);
+
+            console.log(`Initialized canvas: ${canvas.width}x${canvas.height}, Grid: ${gridWidth}x${gridHeight}`);
+
+            // Reset state for fresh start
+            tendrilCounter = 0;
+            pulseCounter = 0;
+            frameCountRef.current = 0;
+
+            // Create a fixed-size grid (with safety bounds checking)
+            gridRef.current = Array(gridHeight).fill(null).map(() =>
+                Array(gridWidth).fill({ type: 'empty', color: BACKGROUND_COLOR })
             );
 
-            if (attempts < 100) {
-                 const sourceId = i;
-                 // Ensure sources are not placed out of bounds
-                 if (y >= 0 && y < gridHeight && x >= 0 && x < gridWidth) {
-                     gridRef.current[y][x] = { type: 'source', color: SOURCE_COLOR, sourceId };
-                     sourcesRef.current.push({ x, y, id: sourceId });
-                     const initialTendrilId = getUniqueTendrilId(sourceId);
-                     tendrilsRef.current.push({
-                        id: initialTendrilId, sourceId: sourceId,
-                        path: [{ x, y }], state: 'growing', pulsePosition: 0, opacity: 1,
-                     });
-                     console.log(`DEBUG: Initialized Tendril ${initialTendrilId} for Source ${sourceId} with path:`, [{ x, y }], 'state: growing');
-                     gridRef.current[y][x].tendrilId = initialTendrilId; // Mark source cell with initial tendril ID
-                 } else {
-                    // console.warn(`Attempted to place source ${i} out of bounds at (${x}, ${y})`);
-                 }
+            sourcesRef.current = [];
+            tendrilsRef.current = [];
+            connectionsRef.current = [];
+            pulsesRef.current = []; // Reset pulses
+
+            // Initialize Sources and Initial Tendrils
+            for (let i = 0; i < NUM_SOURCES; i++) {
+                let x, y, attempts = 0;
+                do {
+                    x = getRandomInt(gridWidth);
+                    y = getRandomInt(gridHeight);
+                    attempts++;
+                } while (
+                    (gridRef.current[y]?.[x]?.type !== 'empty' ||
+                    sourcesRef.current.some(s => Math.abs(s.x - x) < 10 && Math.abs(s.y - y) < 10)) && // Increased spacing
+                    attempts < 100
+                );
+
+                if (attempts < 100) {
+                    const sourceId = i;
+                    // Ensure sources are not placed out of bounds
+                    if (y >= 0 && y < gridHeight && x >= 0 && x < gridWidth) {
+                        gridRef.current[y][x] = { type: 'source', color: SOURCE_COLOR, sourceId };
+                        sourcesRef.current.push({ x, y, id: sourceId });
+                        const initialTendrilId = getUniqueTendrilId(sourceId);
+                        tendrilsRef.current.push({
+                            id: initialTendrilId,
+                            sourceId: sourceId,
+                            path: [{ x, y }],
+                            state: 'growing',
+                            pulsePosition: 0,
+                            opacity: 1,
+                        });
+                        gridRef.current[y][x].tendrilId = initialTendrilId; // Mark source cell with initial tendril ID
+                    }
+                }
             }
+            console.log("DEBUG: Initialized Simulation with Sources:", sourcesRef.current.length, "Tendrils:", tendrilsRef.current.length);
+        } catch (e) {
+            console.error("Error initializing simulation:", e);
+            setError(`Initialization Error: ${e.message}`);
         }
-        console.log("DEBUG: Initialized Simulation with Sources:", sourcesRef.current.length, "Tendrils:", tendrilsRef.current.length);
     };
 
 
@@ -333,34 +368,42 @@ const GameOfLifeCanvas = () => {
     // Function to find a tendril object by its ID
     const findTendrilById = (id) => tendrilsRef.current.find(t => t.id === id);
 
-    // CRITICAL SAFETY: Check if a coordinate is within the grid boundaries
-    const isWithinBounds = (x, y) => {
-        return x >= 0 && x < gridWidth && y >= 0 && y < gridHeight;
-    };
-
     // *** NEW: Spawn Pulses Periodically ***
     const spawnPulses = () => {
-        // console.log('DEBUG: spawnPulses called'); // Keep this commented for less noise
+        console.log(`DEBUG: spawnPulses called, checking ${tendrilsRef.current.length} tendrils`);
+        let spawnCount = 0;
+
         tendrilsRef.current.forEach(tendril => {
             // *** MODIFY LOG: Make branch check more explicit ***
             const isBranch = tendril.id.split('-')[0] === 't' && tendril.id.split('-').length > 2; // Basic check if ID looks like a branch
-            console.log(`DEBUG: spawnPulses checking tendril ${tendril.id} (IsBranch: ${isBranch}), state: ${tendril.state}, path length: ${tendril.path.length}`);
+
+            // Only spawn pulses for growing tendrils
             if (tendril.state === 'growing' || tendril.state === 'connected') {
-                 const nearStartPulse = pulsesRef.current.some(p => p.tendrilId === tendril.id && p.position < PULSE_LENGTH);
-                 if (!nearStartPulse) {
-                     console.log(`DEBUG: Spawning pulse for tendril ${tendril.id}`);
-                     pulsesRef.current.push({
+                // Check if there's already a pulse near the start for this tendril
+                const nearStartPulse = pulsesRef.current.some(p => p.tendrilId === tendril.id && p.position < PULSE_LENGTH);
+
+                if (!nearStartPulse) {
+                    console.log(`DEBUG: Spawning pulse for tendril ${tendril.id} (${tendril.path.length} cells long)`);
+                    pulsesRef.current.push({
                         id: getUniquePulseId(),
                         tendrilId: tendril.id,
                         position: 0,
-                     });
-                 }
+                    });
+                    spawnCount++;
+                }
+            } else {
+                console.log(`DEBUG: Tendril ${tendril.id} state=${tendril.state}, skipping pulse spawn`);
             }
         });
+
+        console.log(`DEBUG: Spawned ${spawnCount} new pulses, total pulses now: ${pulsesRef.current.length}`);
     };
 
     // *** MODIFIED: Advance Pulses (incorporates speed factor directly) ***
     const advancePulses = () => {
+        console.log(`DEBUG: advancePulses called, processing ${pulsesRef.current.length} pulses`);
+        let growthTriggered = 0;
+
         const pulsesToRemove = [];
         const growthTendrils = new Set();
         const currentSpeedFactor = simParamsRef.current.pulseSpeedFactor;
@@ -369,51 +412,69 @@ const GameOfLifeCanvas = () => {
 
         pulsesRef.current.forEach((pulse, index) => {
             const tendril = findTendrilById(pulse.tendrilId);
-            if (!tendril || tendril.state === 'fading' || tendril.state === 'blocked' || tendril.state === 'collided') {
+            if (!tendril) {
+                console.log(`DEBUG: Pulse ${pulse.id} has no matching tendril ${pulse.tendrilId}, removing`);
+                pulsesToRemove.push(index);
+                return;
+            }
+
+            if (tendril.state !== 'growing' && tendril.state !== 'connected') {
+                console.log(`DEBUG: Tendril ${tendril.id} state=${tendril.state}, removing pulse`);
                 pulsesToRemove.push(index);
                 return;
             }
 
             // --- Disconnection Check ---
             const currentPulseCoord = tendril.path[pulse.position];
-            if (currentPulseCoord) {
-                const gridCell = gridRef.current[currentPulseCoord.y]?.[currentPulseCoord.x];
-                // Check if the cell the pulse IS CURRENTLY IN is still valid
-                if (!gridCell) {
-                    // Cell doesn't exist at all
-                    tendril.state = 'fading';
-                    tendril.opacity = Math.min(tendril.opacity, 0.1);
-                    pulsesToRemove.push(index);
-                    return;
-                }
+            if (!currentPulseCoord) {
+                console.log(`DEBUG: No coordinate at position ${pulse.position} for tendril ${tendril.id} (length: ${tendril.path.length})`);
+                pulsesToRemove.push(index);
+                return;
+            }
 
-                // If it's a branch point, it might have multiple tendrilIds
-                if (gridCell.isBranchPoint) {
-                    // Check if this tendril's ID is still in the comma-separated list
-                    const tendrilIds = gridCell.tendrilId.split(',');
-                    if (!tendrilIds.includes(tendril.id)) {
-                        // This tendril's ID is no longer in the list
-                        tendril.state = 'fading';
-                        tendril.opacity = Math.min(tendril.opacity, 0.1);
-                        pulsesToRemove.push(index);
-                        return;
-                    }
-                    // Otherwise, it's still valid
-                }
-                // Normal cell (not a branch point)
-                else if ((gridCell.type !== 'tendril' && gridCell.type !== 'source') ||
-                         gridCell.tendrilId !== tendril.id) {
-                    // Path is broken where the pulse is!
+            if (!isWithinBounds(currentPulseCoord.x, currentPulseCoord.y, gridWidth, gridHeight)) {
+                console.log(`DEBUG: Pulse position out of bounds at (${currentPulseCoord.x}, ${currentPulseCoord.y}), removing`);
+                pulsesToRemove.push(index);
+                return;
+            }
+
+            const gridCell = gridRef.current[currentPulseCoord.y]?.[currentPulseCoord.x];
+            // Check if the cell the pulse IS CURRENTLY IN is still valid
+            if (!gridCell) {
+                // Cell doesn't exist at all
+                tendril.state = 'fading';
+                tendril.opacity = Math.min(tendril.opacity, 0.1);
+                pulsesToRemove.push(index);
+                return;
+            }
+
+            // If it's a branch point, it might have multiple tendrilIds
+            if (gridCell.isBranchPoint) {
+                // Check if this tendril's ID is still in the comma-separated list
+                const tendrilIds = gridCell.tendrilId.split(',');
+                if (!tendrilIds.includes(tendril.id)) {
+                    // This tendril's ID is no longer in the list
                     tendril.state = 'fading';
                     tendril.opacity = Math.min(tendril.opacity, 0.1);
                     pulsesToRemove.push(index);
                     return;
                 }
-            } // else { pulse.position is 0, check might not be needed or possible }
-            // --- End Disconnection Check ---
+                // Otherwise, it's still valid
+            }
+            // Normal cell (not a branch point)
+            else if ((gridCell.type !== 'tendril' && gridCell.type !== 'source') ||
+                     gridCell.tendrilId !== tendril.id) {
+                // Path is broken where the pulse is!
+                tendril.state = 'fading';
+                tendril.opacity = Math.min(tendril.opacity, 0.1);
+                pulsesToRemove.push(index);
+                return;
+            }
 
             // Advance position by calculated steps
+            const oldPosition = pulse.position;
             pulse.position += stepsToAdvance;
+            console.log(`DEBUG: Pulse ${pulse.id} advanced from ${oldPosition} to ${pulse.position} (tendril length: ${tendril.path.length})`);
 
             // --- Check Pulse Position ---
             // Check if pulse reached or passed the end of the current path
@@ -424,16 +485,18 @@ const GameOfLifeCanvas = () => {
                 if (tendril.state === 'growing') {
                     // If the tendril is still growing, trigger growth attempt
                     growthTendrils.add(tendril.id);
+                    growthTriggered++;
+                    console.log(`DEBUG: Pulse ${pulse.id} triggered growth for tendril ${tendril.id}`);
                     // Don't remove the pulse yet, let tryGrowTendril extend the path
                 }
                  // If pulse has gone *past* the valid end index, remove it
                  if (pulse.position >= tendril.path.length) {
-                    // console.log(`Pulse ${pulse.id} went off end of tendril ${tendril.id} (pos ${pulse.position} >= len ${tendril.path.length}). Removing.`);
+                    console.log(`DEBUG: Pulse ${pulse.id} went past end of tendril ${tendril.id}, removing`);
                     pulsesToRemove.push(index);
                 }
-                 // If tendril is NOT growing (e.g., connected, fading, blocked) and pulse reached end, remove it.
+                 // If tendril is NOT growing and pulse reached end, remove it.
                  else if (tendril.state !== 'growing') {
-                     // console.log(`Pulse ${pulse.id} reached end of non-growing tendril ${tendril.id}. Removing.`);
+                     console.log(`DEBUG: Pulse ${pulse.id} reached end of non-growing tendril ${tendril.id}, removing`);
                      pulsesToRemove.push(index);
                  }
                  // Otherwise, if tendril is growing and pulse is exactly at the end, keep it for now.
@@ -446,13 +509,22 @@ const GameOfLifeCanvas = () => {
             pulsesRef.current.splice(pulsesToRemove[i], 1);
         }
 
-        // Trigger growth
-        growthTendrils.forEach(tendrilId => {
-            const tendril = findTendrilById(tendrilId);
-            if (tendril) {
-                tryGrowTendril(tendril);
-            }
-        });
+        console.log(`DEBUG: Removed ${pulsesToRemove.length} pulses, ${pulsesRef.current.length} remain`);
+        console.log(`DEBUG: Growth triggered for ${growthTriggered} tendrils`);
+
+        // Trigger growth for each tendril that needs it
+        if (growthTendrils.size > 0) {
+            console.log(`DEBUG: Attempting growth for ${growthTendrils.size} tendrils`);
+            growthTendrils.forEach(tendrilId => {
+                const tendril = findTendrilById(tendrilId);
+                if (tendril) {
+                    const oldLength = tendril.path.length;
+                    tryGrowTendril(tendril);
+                    const newLength = tendril.path.length;
+                    console.log(`DEBUG: Tendril ${tendrilId} growth: ${oldLength} cells → ${newLength} cells (${newLength - oldLength} growth)`);
+                }
+            });
+        }
     };
 
     // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
@@ -472,9 +544,10 @@ const GameOfLifeCanvas = () => {
 
         // CRITICAL SAFETY: Check if current head is at grid boundary
         // If so, block the tendril from growing further
-        if (currentHead.x <= 0 || currentHead.x >= gridWidth-1 ||
-            currentHead.y <= 0 || currentHead.y >= gridHeight-1) {
-            console.log(`Tendril ${tendril.id} reached boundary at (${currentHead.x},${currentHead.y}). Marking as blocked.`);
+        // NOTE: Fixed off-by-one error in boundary check
+        if (currentHead.x <= 1 || currentHead.x >= gridWidth-2 ||
+            currentHead.y <= 1 || currentHead.y >= gridHeight-2) {
+            console.log(`Tendril ${tendril.id} near boundary at (${currentHead.x},${currentHead.y}). Marking as blocked.`);
             tendril.state = 'blocked';
             return;
         }
@@ -687,7 +760,7 @@ const GameOfLifeCanvas = () => {
         }
 
         // CRITICAL SAFETY: Extra boundary check before moving (redundant but safe)
-        if (!isWithinBounds(nextCell.x, nextCell.y)) {
+        if (!isWithinBounds(nextCell.x, nextCell.y, gridWidth, gridHeight)) {
             console.warn(`Tendril ${tendril.id} attempted to move out of bounds to (${nextCell.x},${nextCell.y}). Blocking.`);
             tendril.state = 'blocked';
             return;
@@ -1103,37 +1176,45 @@ const GameOfLifeCanvas = () => {
     // --- Animation Loop (Using Pulse Speed Factor) ---
     const render = () => {
         if (!canvasRef.current) return;
-        frameCountRef.current++;
+        if (error) return; // Skip rendering if there's an error
 
-        // SAFETY CHECK: Tendril count check (prevent browser crash due to excessive tendrils)
-        const currentTendrilCount = tendrilsRef.current.length;
-        if (currentTendrilCount > 1000) {
-            console.warn(`Tendril count (${currentTendrilCount}) exceeds safety limit. Fading all non-essential tendrils.`);
-            tendrilsRef.current.forEach(tendril => {
-                // Mark non-source tendrils as fading to reduce the active count
-                if (tendril.state === 'growing' && tendril.path.length > 10) {
-                    tendril.state = 'fading';
-                }
-            });
+        try {
+          frameCountRef.current++;
+
+          // SAFETY CHECK: Tendril count check (prevent browser crash due to excessive tendrils)
+          const currentTendrilCount = tendrilsRef.current.length;
+          if (currentTendrilCount > 1000) {
+              console.warn(`Tendril count (${currentTendrilCount}) exceeds safety limit. Fading all non-essential tendrils.`);
+              tendrilsRef.current.forEach(tendril => {
+                  // Mark non-source tendrils as fading to reduce the active count
+                  if (tendril.state === 'growing' && tendril.path.length > 10) {
+                      tendril.state = 'fading';
+                  }
+              });
+          }
+
+          const { pulseGenerationInterval: currentGenInterval } = simParamsRef.current;
+
+          // Spawn new pulses periodically
+          const shouldSpawn = currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0;
+          if (shouldSpawn) {
+              console.log(`DEBUG: Frame ${frameCountRef.current}, Interval ${currentGenInterval}. Calling spawnPulses.`);
+              safeExecute(spawnPulses);
+          }
+
+          // Update simulation state every frame
+          safeExecute(advancePulses);
+          safeExecute(fadeTendrils);
+          safeExecute(updateConnections);
+
+          safeExecute(drawGridAndElements);
+
+          // Continue animation
+          animationFrameId = window.requestAnimationFrame(render);
+        } catch (e) {
+          console.error("Fatal simulation error:", e);
+          setError(`Fatal Error: ${e.message}`);
         }
-
-        const { pulseGenerationInterval: currentGenInterval } = simParamsRef.current;
-
-        // Spawn new pulses periodically
-        const shouldSpawn = currentGenInterval > 0 && frameCountRef.current % Math.round(currentGenInterval) === 0;
-        if (shouldSpawn) {
-            console.log(`DEBUG: Frame ${frameCountRef.current}, Interval ${currentGenInterval}. Calling spawnPulses.`);
-            spawnPulses();
-            console.log('DEBUG: pulsesRef after spawn attempt:', JSON.stringify(pulsesRef.current));
-        }
-
-        // Update simulation state every frame
-        advancePulses();
-        fadeTendrils();
-        updateConnections();
-
-        drawGridAndElements();
-        animationFrameId = window.requestAnimationFrame(render);
     };
 
     // Add resize listener
@@ -1153,9 +1234,27 @@ const GameOfLifeCanvas = () => {
 
     window.addEventListener('resize', handleResize);
 
+    // Initial setup changed to ensure we get initial pulses
+    const initAndStart = () => {
+        try {
+            initializeSimulation();
+
+            if (error) return; // Don't continue if there was an initialization error
+
+            // IMPORTANT: Add initial pulses to start the growth
+            console.log("Adding initial pulses to kickstart growth");
+            safeExecute(spawnPulses);
+
+            // Start animation loop
+            render();
+        } catch (e) {
+            console.error("Error starting simulation:", e);
+            setError(`Startup Error: ${e.message}`);
+        }
+    };
+
     // Initial setup
-    initializeSimulation();
-    render(); // Start the loop
+    initAndStart();
 
     // Cleanup function
     return () => {
@@ -1176,6 +1275,21 @@ const GameOfLifeCanvas = () => {
 
   return (
     <div className="relative w-full h-screen bg-black flex flex-col items-center justify-center p-5">
+      {error && (
+        <div className="absolute top-4 left-4 right-4 bg-red-800 text-white p-3 rounded shadow-lg z-50">
+          <p className="font-bold mb-1">Simulation Error</p>
+          <p>{error}</p>
+          <button
+            className="mt-2 bg-red-600 hover:bg-red-700 px-3 py-1 rounded"
+            onClick={() => {
+              setError(null);
+              window.location.reload();
+            }}
+          >
+            Restart Simulation
+          </button>
+        </div>
+      )}
       <canvas
         ref={canvasRef}
         id="gameOfLifeCanvas"
