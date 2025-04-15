@@ -1,18 +1,23 @@
 import React from 'react';
-import Hero from './components/Hero';
-import Section from './components/Section';
-import TraitCard from './components/TraitCard';
-import QuoteBlock from './components/QuoteBlock';
-import DataTable from './components/DataTable';
-import PromptBubble from './components/PromptBubble';
-import Footer from './components/Footer';
+// Keep other imports if needed later, but comment out for now
+// import Hero from './components/Hero';
+// import Section from './components/Section';
+// import TraitCard from './components/TraitCard';
+// import QuoteBlock from './components/QuoteBlock';
+// import DataTable from './components/DataTable';
+// import PromptBubble from './components/PromptBubble';
+// import Footer from './components/Footer';
+import GOLSurvival from './components/GOLSurvival';
 
-// Import the profile data
-import { profileData } from './data/profileData';
+// Import the profile data - might not be needed for this component
+// import { profileData } from './data/profileData';
 
 function App() {
   return (
-    <div className="min-h-screen bg-background text-gray-800 relative pb-20">
+    <div className="min-h-screen bg-background text-gray-800">
+      {/* Using the new Survival component */}
+      <GOLSurvival />
+      {/*
       <Hero />
       <PromptBubble promptText={profileData.prompt} />
 
@@ -81,6 +86,7 @@ function App() {
       </main>
 
       <Footer />
+      */}
     </div>
   );
 }

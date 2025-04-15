@@ -15,3 +15,8 @@ alwaysApply: true
 
 1.  **Feature Completion:** Once a feature or significant step is confirmed by Vlatko as complete, functional, and merged/committed, the Developer AI will add a concise entry to the `project_log.md` file.
 2.  **Log Purpose:** This log serves as a high-level tracker of completed milestones and project progress.
+
+## Session Continuity
+
+1.  **End-of-Session Updates:** Before concluding a chat session or moving to a significantly new task, ensure project logs (`project_log.md`) and relevant rule files (`.cursor/rules/*.mdc`) are updated with completed work and any emergent meta-instructions or process refinements.
+2.  **New Session Initialization:** Start new chat sessions by providing the AI with the updated rules and logs to ensure maximum context and project continuity.

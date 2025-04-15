@@ -1,5 +1,5 @@
 ---
-description: 
+description:
 globs: src/components/GameOfLifeCanvas.jsx
 alwaysApply: false
 ---
@@ -7,49 +7,135 @@ alwaysApply: false
 
 ## 🎯 Overarching Goal
 
-Create a visually captivating, generative simulation within a React component (`GameOfLifeCanvas.jsx`) that evokes organic, tendril-like growth patterns originating from multiple sources. The simulation should feature:
+Create a visually captivating, generative simulation within a React component (`GameOfLifeCanvas.jsx`) that evokes organic, tendril-like growth patterns originating from multiple sources. The simulation features:
 -   **Tendril Growth:** Structures ("tendrils") grow outwards from sources across a grid.
--   **Branching:** Tendrils should probabilistically branch off, creating complex networks.
--   **Signal Propagation:** Growth should not be continuous but triggered by distinct "signals" or "waves" propagating from the source along the tendrils to their tips. Growth occurs *only* when a signal reaches a tip.
--   **Fading/Cleanup:** Tendrils that become disconnected from their origin source should gracefully fade and be removed.
--   **Connections:** Tendrils from different sources might eventually connect (feature needs refinement).
--   **Aesthetics:** Aim for a visually pleasing "constellation" or "neural network" feel, using the project's color palette, with clear visualization of tendrils and signal movement.
--   **Interactivity:** Allow user control over key parameters like signal frequency, branching chance, fade speed, and growth direction biases via UI controls.
+-   **Age-Based Visualization:** Tendrils transition from orange (new growth) to blue (established paths).
+-   **Signal Propagation:** Growth occurs *only* when white signal pulses travel from sources along tendrils and reach their tips.
+-   **Conductivity Mechanics:** Older (blue) pathways conduct signals faster than newer (orange) segments.
+-   **Branching:** Tendrils probabilistically branch off, creating complex networks.
+-   **Fading/Cleanup:** Tendrils that become disconnected from their origin source gracefully fade and are removed.
+-   **Aesthetics:** A visually pleasing "constellation" or "neural network" feel, using the project's color palette.
+-   **Interactivity:** User control over signal frequency, pulse speed, branching chance, fade speed, and growth direction biases.
 
-## 📜 History & Key Observations
+## 📜 Simulation Mechanics
 
-1.  **Initial Version (Pulse-based):** Started with a simpler model where "pulses" traveled along tendrils, and each pulse step potentially triggered growth.
-2.  **Branching Issues:** Introducing branching led to challenges:
-    *   Branches often died quickly or didn't survive.
-    *   Fine-tuning growth/branching logic was difficult.
-3.  **Continuous Growth Problem:** Attempts to improve survival and visuals resulted in tendrils growing continuously at the same rate as the pulse/signal, losing the discrete wave effect ("cancerous" growth). Path integrity (connection to source) also became unreliable.
-4.  **User Request for Signal Model:** Vlatko requested a clear separation: signals should travel the *entire* length of a tendril (and its branches) from source to tip, and growth should *only* be triggered at the tip *after* the signal arrives. The tendril path itself should remain static between signal arrivals.
-5.  **Major Refactor (Signal Propagation):** Initiated a significant refactor to implement this signal-based model, removing the old pulse logic.
+### Signal & Growth System
+1. **Signal Emission:** Sources emit signals at regular intervals (Hz) defined by the frequency slider.
+2. **Signal Propagation:**
+   - Signals travel along tendrils from sources toward tips at speed controlled by the pulse speed slider.
+   - Older (blue) segments conduct signals 3-10x faster than newer (orange) segments.
+   - When a signal reaches a branch point, it propagates down all connected branches.
+3. **Growth Triggering:**
+   - Growth occurs *only* when a signal reaches a tendril tip.
+   - Each growth step adds one new cell in a direction weighted by the direction bias controls.
+4. **Branching:**
+   - After a successful growth step, there's a chance (branch chance %) a new branch tendril forms.
+   - Young branches have immunity from certain checks to help them establish.
+5. **Path Integrity:**
+   - Periodic checks verify all tendrils can trace a valid path back to their source.
+   - Disconnected tendrils are marked as "fading" and gradually disappear.
 
-## 🛠️ Implementation Concepts (Current Signal Model)
+### Age & Color System
+1. **Cell Aging:**
+   - New cells start at age 0 (orange)
+   - Cells age gradually over time, up to MAX_CELL_AGE (600)
+   - Color transitions from YOUNG_TENDRIL_COLOR (orange) to OLD_TENDRIL_COLOR (blue)
+2. **Conductivity:**
+   - Conductivity multiplier ranges from MIN_CONDUCTIVITY (0.3) to MAX_CONDUCTIVITY (3.0)
+   - Creates a "beaten path" effect where established routes become efficient highways
 
--   **`Sources`**: Fixed points on the grid where tendrils originate (`sourcesRef`).
--   **`Tendrils`**: Data structures representing the growing paths (`tendrilsRef`). Each has:
-    -   `id`, `sourceId`, `parentId` (if branch)
-    -   `path`: Array of `{x, y}` coordinates.
-    -   `state`: `'growing'`, `'blocked'`, `'fading'`, `'connected'`.
-    -   `signalState`: `'idle'`, `'propagating'`, `'reached_tip'`.
-    -   `signalPosition`: Index in the `path` array where the signal currently is.
-    -   `opacity`, `isBranch`, `creation` timestamp.
--   **`Grid`**: 2D array representing the canvas cells (`gridRef`), storing type (`empty`, `source`, `tendril`, `connection`), color, opacity, and associated tendril/source IDs.
--   **`Signal Emission` (`emitSignal`)**: Periodically called based on `signalInterval`. Sets `signalState` to `'propagating'` and `signalPosition` to 0 for tendrils connected to a source that are currently `'idle'`.
--   **`Signal Propagation` (`propagateSignal`)**: Called each frame. Increments `signalPosition` for tendrils in `'propagating'` state. If a signal reaches the end of the `path`, state changes to `'reached_tip'`. If it hits a branch point, it attempts to start propagation on connected, idle branches.
--   **`Growth Triggering` (`triggerGrowthAtTips`)**: Called each frame. Checks for tendrils that reached the tip (`'reached_tip'`) *in the current frame*. Calls `tryGrowTendril` for these tendrils and resets their `signalState` to `'idle'`.
--   **`Growth Step` (`tryGrowTendril`)**: Attempts *one* step of growth from the tendril's current tip based on weighted random selection of valid neighboring cells. Considers direction weights, adjacency penalties. Called *only* by `triggerGrowthAtTips`.
--   **`Branching` (`attemptBranching`)**: Probabilistically attempts to create a *new* tendril branching off from the *parent* tendril *after* a successful growth step in `tryGrowTendril`. New branches start with `signalState: 'idle'`.
--   **`Path Verification` (`verifyPathIntegrity`, `verifyTendrilConnectivity`)**: Periodically checks if tendrils are still connected back to their source via their parent chain. Marks disconnected tendrils as `'fading'`.
--   **`Fading` (`fadeTendrils`)**: Decreases opacity of tendrils in `'fading'` state each frame and removes them (along with grid cleanup) when opacity reaches zero.
--   **`Connections` (`updateConnections`)**: Handles visual state for points where tendrils from different sources meet (needs review post-refactor).
--   **`Regeneration` (`checkSourcesForRegeneration`)**: Logic to potentially restart growth from a source if all its tendrils have died out.
+### Visual Elements
+1. **Color Scheme:**
+   - Sources: Indigo (#6366F1)
+   - Young Growth: Orange (#F59E0B)
+   - Old Growth: Navy Blue (#1E3A8A)
+   - Signals: White (#FFFFFF) with trailing effect
+   - Branch Points: Temporarily white, fades to age-appropriate color
+2. **Signal Visualization:**
+   - Signals appear as white pulses with a trailing effect (4 cells)
+   - Enhanced brightness for better visibility
 
-## ⚠️ Current State & Next Steps (As of Refactor Pause)
+## 🧮 Key Parameters & Controls
 
--   The major refactor to the signal-based model is **incomplete and currently broken**.
--   Manual code replacement was used after automated edits failed.
--   **Immediate Errors:** The simulation fails on startup with errors like `initializeSimulation is not defined` and subsequent potential errors like `canvas is not defined`. This indicates problems in the component's `useEffect` hook, initialization function calls, and likely how the canvas/context are being accessed.
--   **Next Step:** Debug the initialization flow within the `useEffect` hook in `GameOfLifeCanvas.jsx` to resolve the runtime errors and get the simulation rendering again with the new signal logic foundation.
+### Frequency & Speed
+- **Signal Frequency** (0.2-4.0 Hz): How often signals are emitted from sources
+- **Pulse Speed** (0.5-10.0): Base cells per second signals travel
+- **Effective Speed** = Base Speed × Conductivity Multiplier
+
+### Growth & Development
+- **Branch Chance** (0-50%): Probability of forming a new branch after growth
+- **Fade Speed** (0.001-0.05): How quickly disconnected segments fade out
+- **Direction Weights** (9-value grid): Controls directional bias of growth
+
+### Core Constants
+- `MAX_CELL_AGE = 600`: Maximum age for color/conductivity calculation
+- `MIN_CONDUCTIVITY = 0.3`: Minimum conductivity multiplier (young cells)
+- `MAX_CONDUCTIVITY = 3.0`: Maximum conductivity multiplier (old cells)
+- `BRANCH_ADJACENCY_IMMUNITY_STEPS = 20`: Frames young branches are immune to checks
+- `PULSE_VISIBILITY = 2.5`: Brightness multiplier for signal pulses
+- `MIN_PATH_LENGTH_FOR_BRANCHING = 5`: Tendrils must reach this length before branching
+
+## 📊 Current State & Next Steps
+
+-   The signal-based growth model with age-based coloring and conductivity is **fully functional**.
+-   The system demonstrates emergent behaviors similar to natural systems like:
+    - Neural networks (signals propagating along pathways)
+    - Fungal mycelium networks (branching exploration & efficient pathways)
+    - Vascular systems (development of main arteries and capillaries)
+-   **Future Enhancements:**
+    - Environmental influences (nutrients, obstacles, attractors)
+    - Connection behaviors (tendrils from different sources connecting)
+    - Healing mechanics (paths repairing broken connections)
+    - Adaptive parameters (emergent self-regulation)
+
+# GOL Survival Simulation Rules
+
+## Core Principles (Optimized)
+
+*   **Grid & State:** 2D grid. Cells: empty, source, tendril, food. Tendrils: growing, blocked, fading, connected, reabsorbing. Cells store `creationFrame`.
+*   **Tendril Data:** Use a `Map` (`tendrilsMap`) for O(1) lookup by ID.
+*   **Sources:** Start with finite `energy`. Emit signals if `energy > 0`. Consume energy per cell created.
+*   **Signals:** Pulses travel along paths. Speed depends on calculated age/conductivity.
+*   **Age & Conductivity:** Calculated on demand (`currentFrame - creationFrame`). Affects color (Orange -> Blue) and conductivity (Slow -> Fast).
+*   **Growth:** Triggered by signal reaching tip. Costs energy from the source. Direction uses weighted randomness.
+*   **Branching:** Probabilistic after growth. Costs energy.
+*   **Path Integrity & Fading:** Simplified check (e.g., based on parent state in `tendrilsMap`). Fading tendrils are visually distinct and eventually removed (no energy cost/gain).
+
+## Survival & Cooperation Mechanics
+
+*   **Energy:**
+    *   Sources start with `INITIAL_SOURCE_ENERGY`.
+    *   Each grown cell costs `CELL_ENERGY_COST`.
+    *   Tendrils stop growing if source `energy <= 0`.
+*   **Food:**
+    *   `FoodPellet` objects appear randomly on the grid (e.g., 4x4 cells).
+    *   Each pellet cell stores `FOOD_ENERGY_PER_CELL`.
+    *   When a tendril tip hits a food cell:
+        *   Consume the food cell, add its energy to the source's bank.
+        *   The food cell becomes a `tendril` cell (part of the path).
+        *   Mark the food pellet location as a potential new signaling point.
+*   **Resource Reabsorption (Decay Type 1 - Disconnected):**
+    *   Tendrils disconnected via simplified integrity check enter `fading` state (visual decay, no energy change).
+*   **Resource Reabsorption (Decay Type 2 - Path Optimization):**
+    *   Triggered when:
+        *   Tendril reaches a food source.
+        *   Tendrils from two different sources connect.
+    *   Identify the shortest path between the source(s) and the target (food/connection point). A* search or similar might be needed.
+    *   All other tendril segments belonging to the involved source(s) that are *not* on the shortest path enter a `reabsorbing` state.
+    *   `reabsorbing` tendrils visually decay differently (e.g., reverse color fade Blue -> Orange -> Dim -> Gone).
+    *   Energy from reabsorbed cells (`CELL_ENERGY_COST` per cell) is returned to the source's bank.
+*   **Cooperation (Source Connection):**
+    *   When tendrils from `sourceA` and `sourceB` meet:
+        *   Establish connection point.
+        *   Trigger Path Optimization (see above) for both sources towards the connection point.
+        *   Merge energy banks: `sourceA.energy += sourceB.energy`. Mark `sourceB` inactive (or similar state management).
+        *   The connection point becomes a new signal emission point, alternating or coordinating with `sourceA`.
+*   **Food as New Source:**
+    *   Once a food pellet is fully consumed, the location(s) can start emitting signals, propagating outwards along the tendril that found it. Requires careful state management to prevent immediate re-consumption.
+
+## Aesthetics & Goals
+
+*   Emulate slime mold behavior (exploration, exploitation, path optimization).
+*   Visually distinct states (growing, fading, reabsorbing, signals).
+*   Optimize for performance.
+*   Achieve complex emergent behavior from simple, local rules.

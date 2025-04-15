@@ -7,9 +7,9 @@ const GROWTH_STEP = 1; // Cells per growth event
 const DEFAULT_SIGNAL_FREQUENCY = 1.0; // Hz
 const DEFAULT_BRANCH_CHANCE = 0.10;
 const DEFAULT_PULSE_SPEED = 2.0; // Base cells per second
-const MAX_CELL_AGE = 600; // Frames for full color/conductivity transition
+const MAX_CELL_AGE = 1200; // Frames for full color/conductivity transition
 const MIN_CONDUCTIVITY = 0.8;
-const MAX_CONDUCTIVITY = 3.0;
+const MAX_CONDUCTIVITY = 4.0;
 const PULSE_VISIBILITY = 2.0; // Brightness multiplier
 const PATH_INTEGRITY_CHECK_INTERVAL = 50; // Frames (less frequent)
 const SOURCE_REGENERATION_DELAY = 150; // Frames
@@ -21,8 +21,8 @@ const CELL_ENERGY_COST = 1; // Energy cost per cell grown/branched
 const FOOD_PELLET_SIZE = 4; // NxN size
 const FOOD_DENSITY = 0.0005; // Chance per cell per frame to spawn food
 const FOOD_ENERGY_PER_CELL = 50; // Energy gained per food cell consumed
-const REABSORPTION_FADE_SPEED = 0.01; // Faster fade for reabsorbed tendrils
-const STANDARD_FADE_SPEED = 0.005; // Slower fade for disconnected tendrils
+const REABSORPTION_FADE_SPEED = 0.005; // Faster fade for reabsorbed tendrils - SLOWED DOWN
+const STANDARD_FADE_SPEED = 0.002; // Slower fade for disconnected tendrils - SLOWED DOWN
 
 // --- Colors ---
 const SOURCE_COLOR = '#6366F1'; // Indigo Flame
@@ -57,8 +57,56 @@ const UI_INDEX_TO_RELATIVE = Object.fromEntries(Object.entries(RELATIVE_TO_UI_IN
 let tendrilCounter = 0;
 const getUniqueTendrilId = (sourceId) => `t-${sourceId}-${tendrilCounter++}`;
 const getRandomInt = (max) => Math.floor(Math.random() * max);
-const parseHex = (hex) => { /* ... (implementation same as before) ... */ };
-const interpolateColors = (color1Hex, color2Hex, t) => { /* ... (implementation same as before) ... */ };
+
+// Helper for hex parsing with safety checks
+const parseHex = (hex) => {
+    if (!hex || typeof hex !== 'string' || hex.length < 7) {
+        console.warn(`Invalid hex color: "${hex}", using fallback`);
+        return [0, 0, 0]; // Black fallback
+    }
+
+    try {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return [
+            isNaN(r) ? 0 : r,
+            isNaN(g) ? 0 : g,
+            isNaN(b) ? 0 : b
+        ];
+    } catch (err) {
+        console.error("Error parsing hex color:", err, hex);
+        return [0, 0, 0]; // Fallback to black
+    }
+};
+
+// Safe color interpolation
+const interpolateColors = (color1Hex, color2Hex, t) => {
+    try {
+        // Ensure valid input colors with fallbacks
+        const color1 = color1Hex && typeof color1Hex === 'string' ? color1Hex : '#000000';
+        const color2 = color2Hex && typeof color2Hex === 'string' ? color2Hex : '#000000';
+
+        // Ensure t is within 0-1 range
+        const clampedT = Math.max(0, Math.min(1, t || 0));
+
+        const [r1, g1, b1] = parseHex(color1);
+        const [r2, g2, b2] = parseHex(color2);
+
+        // Interpolate RGB values
+        const r = Math.round(r1 + (r2 - r1) * clampedT);
+        const g = Math.round(g1 + (g2 - g1) * clampedT);
+        const b = Math.round(b1 + (b1 - b1) * clampedT);
+
+        // Convert back to hex with safety checks
+        return `#${Math.max(0, Math.min(255, r)).toString(16).padStart(2, '0')}${
+            Math.max(0, Math.min(255, g)).toString(16).padStart(2, '0')}${
+            Math.max(0, Math.min(255, b)).toString(16).padStart(2, '0')}`;
+    } catch (err) {
+        console.error("Error in color interpolation:", err);
+        return "#000000"; // Return black as fallback
+    }
+};
 
 // Age/Conductivity calculation (On Demand)
 const calculateAge = (creationFrame, currentFrame) => Math.min(currentFrame - creationFrame, MAX_CELL_AGE);
@@ -89,23 +137,142 @@ const GOLSurvival = () => {
   const [signalFrequency, setSignalFrequency] = useState(1.5); // Default 1.5 Hz
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [pulseSpeed, setPulseSpeed] = useState(7.0); // Increased default speed again to 7.0
-  const [directionWeights, setDirectionWeights] = useState([0.8, 2.5, 0.8, 0.3, 0, 0.3, 0.1, 0.1, 0.1]);
+  const [directionWeights, setDirectionWeights] = useState([
+    0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
+    0.1, 0, 0.1,    // Left, Center, Right
+    0, 0, 0         // Backward-left, Backward, Backward-right
+  ]);
   // Maybe add controls for energy cost, food density later
+
+  // --- IMPORTANT: Function declarations for functions used in circular dependencies ---
+  // These need to be declared before they're used
+
+  // Get Tendril by ID (O(1) lookup) - MUST BE DECLARED EARLY
+  const getTendrilById = (id) => {
+    if (!id) return null;
+    return tendrilsRef.current && tendrilsRef.current.get ? tendrilsRef.current.get(id) : null;
+  };
+
+  // Get Source by ID - MUST BE DECLARED EARLY
+  const getSourceById = (id) => {
+    if (!id) return null;
+    return sourcesRef.current && Array.isArray(sourcesRef.current) ?
+      sourcesRef.current.find(s => s && s.id === id) : null;
+  };
+
+  // Check bounds - MUST BE DECLARED EARLY
+  const isWithinBounds = (x, y) => {
+    const dims = gridDimensions.current || { width: 0, height: 0 };
+    return x >= 0 && x < dims.width && y >= 0 && y < dims.height;
+  };
+
+  // Handle Food Collision - MUST BE DECLARED EARLY
+  const handleFoodCollision = (tendril, foodCellCoord) => {
+    if (!tendril || !foodCellCoord || !gridRef.current) {
+      console.warn('Invalid parameters in handleFoodCollision');
+      return;
+    }
+
+    const source = getSourceById(tendril.sourceId);
+    // Make sure the grid cell exists
+    if (!isWithinBounds(foodCellCoord.x, foodCellCoord.y)) {
+      console.warn(`Food coordinates out of bounds: (${foodCellCoord.x}, ${foodCellCoord.y})`);
+      return;
+    }
+
+    const gridRow = gridRef.current[foodCellCoord.y];
+    if (!gridRow) {
+      console.warn(`Grid row ${foodCellCoord.y} doesn't exist`);
+      return;
+    }
+
+    const foodCell = gridRow[foodCellCoord.x];
+    if (!source || !foodCell || foodCell.type !== 'food' || !foodCell.foodPelletId) {
+      console.warn(`Invalid food collision call: source=${source?.id}, cellType=${foodCell?.type}, pelletId=${foodCell?.foodPelletId}`);
+      return;
+    }
+
+    const pelletId = foodCell.foodPelletId;
+    const pellet = foodPelletsRef.current && foodPelletsRef.current.find ?
+      foodPelletsRef.current.find(p => p && p.id === pelletId) : null;
+
+    if (!pellet) {
+      console.warn(`Food pellet ${pelletId} not found in foodPelletsRef.`);
+      foodCell.type = 'empty';
+      foodCell.color = BACKGROUND_COLOR;
+      foodCell.foodPelletId = null;
+      return;
+    }
+
+    const cellKey = `${foodCellCoord.x},${foodCellCoord.y}`;
+    const foodData = pellet.cells && pellet.cells.get ? pellet.cells.get(cellKey) : null;
+
+    if (!foodData) {
+      console.warn(`Food cell (${cellKey}) not found in data for pellet ${pelletId}.`);
+      foodCell.type = 'empty';
+      foodCell.color = BACKGROUND_COLOR;
+      foodCell.foodPelletId = null;
+      return;
+    }
+
+    // 1. Add energy to source
+    const energyGained = foodData.energy || 0;
+    source.energy += energyGained;
+    pellet.remainingEnergy -= energyGained;
+    console.log(`%cTendril ${tendril.id} consumed food at (${foodCellCoord.x}, ${foodCellCoord.y}). Source ${source.id} gained ${energyGained} E. New total: ${source.energy.toFixed(0)} E.`, 'color: green; font-weight: bold');
+
+    // 2. Update grid cell to become part of the tendril
+    foodCell.type = 'tendril';
+    foodCell.color = getColorFromAge(0);
+    foodCell.tendrilId = tendril.id;
+    foodCell.sourceId = tendril.sourceId;
+    foodCell.foodPelletId = null;
+    foodCell.creationFrame = frameCountRef.current || 0;
+
+    // 3. Remove cell from pellet data
+    if (pellet.cells && pellet.cells.delete) {
+      pellet.cells.delete(cellKey);
+    }
+
+    // 4. Check if pellet is fully consumed
+    if (pellet.cells && pellet.cells.size === 0) {
+      console.log(`%cFood pellet ${pelletId} fully consumed.`, 'color: green');
+      foodPelletsRef.current = foodPelletsRef.current.filter(p => p && p.id !== pelletId);
+    }
+  };
+
+  // Handle Tendril Collision - MUST BE DECLARED EARLY
+  const handleTendrilCollision = (tendril1, tendril2) => {
+    if (!tendril1 || !tendril2 || !gridRef.current) return;
+
+    if (tendril1.sourceId !== tendril2.sourceId) {
+      console.log(`%cCollision detected: Tendril ${tendril1.id} (Source ${tendril1.sourceId}) and Tendril ${tendril2.id} (Source ${tendril2.sourceId})`, 'color: yellow');
+
+      tendril1.state = 'blocked';
+      tendril2.state = 'blocked';
+
+      const collisionPoint = tendril1.path && tendril1.path.length ?
+        tendril1.path[tendril1.path.length - 1] : null;
+
+      if (collisionPoint && isWithinBounds(collisionPoint.x, collisionPoint.y)) {
+        const gridRow = gridRef.current[collisionPoint.y];
+        if (gridRow) {
+          const cell = gridRow[collisionPoint.x];
+          if (cell) {
+            cell.isConnectionPoint = true;
+          }
+        }
+      }
+    }
+  };
 
   // Ref for current simulation parameters
   const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights });
   useEffect(() => {
     simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights };
-    // saveSettingsToLocalStorage(simParamsRef.current); // If using localStorage
   }, [signalFrequency, branchChance, pulseSpeed, directionWeights]);
 
-
   // --- Core Simulation Logic ---
-
-  // Utility: Check bounds
-  const isWithinBounds = useCallback((x, y) => {
-      return x >= 0 && x < gridDimensions.current.width && y >= 0 && y < gridDimensions.current.height;
-  }, []); // Empty dependency array as gridDimensions ref changes don't trigger re-renders
 
   // Utility: Safe execution wrapper
   const safeExecute = useCallback((fn, context, ...args) => {
@@ -123,31 +290,41 @@ const GOLSurvival = () => {
     }
   }, [error]); // Depends on error state
 
-  // Get Tendril by ID (O(1) lookup)
-  const getTendrilById = useCallback((id) => tendrilsRef.current.get(id), []);
-
-  // Get Source by ID
-  const getSourceById = useCallback((id) => sourcesRef.current.find(s => s.id === id), []);
-
   // --- Placeholder Functions (To be implemented) ---
 
   const initializeGrid = useCallback((width, height) => {
-      console.log(`Initializing grid: ${width}x${height}`);
-      gridRef.current = Array.from({ length: height }, (_, y) =>
-          Array.from({ length: width }, (_, x) => ({
-              type: 'empty', // 'empty', 'source', 'tendril', 'food'
-              color: BACKGROUND_COLOR,
-              tendrilId: null, // Can be single ID or comma-separated for branch points
-              sourceId: null, // ID of the originating source
-              foodPelletId: null, // ID of the food pellet this cell belongs to
-              opacity: 1,
-              isBranchPoint: false,
-              isConnectionPoint: false, // For source-source connections
-              creationFrame: 0, // Frame when the cell became non-empty (for age calculation)
-              // Add other potential states: e.g., energy level for food
-          }))
-      );
-      console.log("Grid initialized.");
+      try {
+          console.log(`Initializing grid: ${width}x${height}`);
+          if (!width || !height || width <= 0 || height <= 0) {
+              console.error(`Invalid grid dimensions: ${width}x${height}`);
+              throw new Error("Invalid grid dimensions");
+          }
+
+          // Create a full 2D array with predefined cell objects
+          const newGrid = Array.from({ length: height }, (_, y) =>
+              Array.from({ length: width }, (_, x) => ({
+                  type: 'empty', // 'empty', 'source', 'tendril', 'food'
+                  color: BACKGROUND_COLOR,
+                  tendrilId: null, // Can be single ID or comma-separated for branch points
+                  sourceId: null, // ID of the originating source
+                  foodPelletId: null, // ID of the food pellet this cell belongs to
+                  opacity: 1,
+                  isBranchPoint: false,
+                  isConnectionPoint: false, // For source-source connections
+                  creationFrame: 0, // Frame when the cell became non-empty (for age calculation)
+              }))
+          );
+
+          // Set the grid reference
+          gridRef.current = newGrid;
+
+          console.log(`Grid initialized successfully: ${width}x${height} cells created.`);
+          return true;
+      } catch (err) {
+          console.error("Grid initialization failed:", err);
+          setError(`Grid initialization error: ${err.message || "Unknown error"}`);
+          return false;
+      }
   }, []);
 
   const placeSources = useCallback((numSources, gridWidth, gridHeight) => {
@@ -225,68 +402,127 @@ const GOLSurvival = () => {
   }, [isWithinBounds]);
 
   const spawnFoodPellets = useCallback(() => {
-      // console.log("Attempting to spawn food..."); // Log entry
-      // Simple probability check for spawning *a* pellet this frame - REMOVED from here, check done in render loop
-      // if (Math.random() >= FOOD_DENSITY * gridDimensions.current.width * gridDimensions.current.height) {
-      //     return;
-      // }
+      try {
+          // Limit food pellets to a reasonable number
+          const MAX_FOOD_PELLETS = 5; // Reduced from 10
 
-      const gridWidth = gridDimensions.current.width;
-      const gridHeight = gridDimensions.current.height;
-      if (!gridWidth || !gridHeight) return; // Ensure grid dimensions are valid
-
-      const attempts = 10; // Try a few times to find a spot
-
-      for (let i = 0; i < attempts; i++) {
-          const startX = getRandomInt(gridWidth - FOOD_PELLET_SIZE);
-          const startY = getRandomInt(gridHeight - FOOD_PELLET_SIZE);
-
-          // Check if the area is clear
-          let areaClear = true;
-          for (let y = startY; y < startY + FOOD_PELLET_SIZE; y++) {
-              for (let x = startX; x < startX + FOOD_PELLET_SIZE; x++) {
-                  // Ensure check is within bounds before accessing grid
-                  if (!isWithinBounds(x, y) || gridRef.current[y]?.[x]?.type !== 'empty') {
-                      areaClear = false;
-                      break;
-                  }
-              }
-              if (!areaClear) break;
+          if (foodPelletsRef.current.length >= MAX_FOOD_PELLETS) {
+              console.log(`Already have ${foodPelletsRef.current.length}/${MAX_FOOD_PELLETS} food pellets, skipping spawn`);
+              return false;
           }
 
-          if (areaClear) {
-              // console.log(`%cFound clear area at (${startX}, ${startY}) after ${i+1} attempts. Placing food.`, 'color: green');
-              // Place the food pellet
-              const pelletId = `food-${frameCountRef.current}-${startX}-${startY}`;
-              const pelletCells = new Map();
-              let totalPelletEnergy = 0;
+          const dims = gridDimensions.current || { width: 0, height: 0 };
+          const gridWidth = dims.width;
+          const gridHeight = dims.height;
 
-              for (let y = startY; y < startY + FOOD_PELLET_SIZE; y++) {
-                  for (let x = startX; x < startX + FOOD_PELLET_SIZE; x++) {
+          if (!gridWidth || !gridHeight || gridWidth < FOOD_PELLET_SIZE || gridHeight < FOOD_PELLET_SIZE) {
+              console.log("Invalid grid dimensions for food placement");
+              return false;
+          }
+
+          // Limit to smaller pellet size
+          const EFFECTIVE_PELLET_SIZE = Math.min(FOOD_PELLET_SIZE, 4);
+
+          console.log(`Food spawn attempt: Grid size: ${gridWidth}x${gridHeight}, Current pellets: ${foodPelletsRef.current.length}`);
+
+          // Try several locations
+          const attempts = 20;
+          for (let i = 0; i < attempts; i++) {
+              // Keep food away from edges
+              const maxX = gridWidth - EFFECTIVE_PELLET_SIZE - 2;
+              const maxY = gridHeight - EFFECTIVE_PELLET_SIZE - 2;
+
+              // Make sure we have valid bounds
+              if (maxX <= 2 || maxY <= 2) {
+                  console.log("Grid too small for food placement");
+                  return false;
+              }
+
+              // Choose position with margin from edges
+              const startX = 2 + getRandomInt(maxX - 2);
+              const startY = 2 + getRandomInt(maxY - 2);
+
+              console.log(`Checking area at (${startX}, ${startY}) for food placement`);
+
+              // Check if area is clear
+              let areaClear = true;
+              for (let y = startY; y < startY + EFFECTIVE_PELLET_SIZE; y++) {
+                  for (let x = startX; x < startX + EFFECTIVE_PELLET_SIZE; x++) {
+                      if (!isWithinBounds(x, y)) {
+                          areaClear = false;
+                          break;
+                      }
+
                       const cell = gridRef.current[y][x];
-                      cell.type = 'food';
-                      cell.color = FOOD_COLOR;
-                      cell.foodPelletId = pelletId;
-                      cell.opacity = 1;
-                      // Store energy per cell? Or just track total? Let's do per cell for now.
-                      const cellEnergy = FOOD_ENERGY_PER_CELL; // Could randomize this slightly
-                      pelletCells.set(`${x},${y}`, { energy: cellEnergy });
-                      totalPelletEnergy += cellEnergy;
+                      if (!cell || cell.type !== 'empty') {
+                          areaClear = false;
+                          break;
+                      }
                   }
+                  if (!areaClear) break;
               }
 
-              foodPelletsRef.current.push({
-                  id: pelletId,
-                  x: startX, y: startY,
-                  size: FOOD_PELLET_SIZE,
-                  initialEnergy: totalPelletEnergy,
-                  remainingEnergy: totalPelletEnergy,
-                  cells: pelletCells, // Map of "x,y" -> { energy }
-              });
+              if (areaClear) {
+                  console.log(`%c✅ FOUND CLEAR AREA FOR FOOD at (${startX}, ${startY})`, "color: lime");
 
-              console.log(`Spawned Food Pellet ${pelletId} at (${startX}, ${startY}) with ${totalPelletEnergy} energy.`);
-              return; // Stop after successfully placing one pellet per call
+                  // Create unique pellet ID
+                  const pelletId = `food-${frameCountRef.current}-${startX}-${startY}`;
+                  const pelletCells = new Map();
+                  let totalPelletEnergy = 0;
+
+                  // Mark all cells in the food pellet area
+                  for (let y = startY; y < startY + EFFECTIVE_PELLET_SIZE; y++) {
+                      for (let x = startX; x < startX + EFFECTIVE_PELLET_SIZE; x++) {
+                          if (!gridRef.current[y] || !gridRef.current[y][x]) continue;
+
+                          const cell = gridRef.current[y][x];
+                          cell.type = 'food';
+                          cell.color = FOOD_COLOR;
+                          cell.foodPelletId = pelletId;
+                          cell.opacity = 1;
+
+                          // Store energy data
+                          const cellEnergy = FOOD_ENERGY_PER_CELL;
+                          const cellKey = `${x},${y}`;
+                          pelletCells.set(cellKey, { energy: cellEnergy });
+                          totalPelletEnergy += cellEnergy;
+                      }
+                  }
+
+                  // Add to food pellets collection
+                  foodPelletsRef.current.push({
+                      id: pelletId,
+                      x: startX,
+                      y: startY,
+                      size: EFFECTIVE_PELLET_SIZE,
+                      initialEnergy: totalPelletEnergy,
+                      remainingEnergy: totalPelletEnergy,
+                      cells: pelletCells,
+                      creationFrame: frameCountRef.current
+                  });
+
+                  console.log(`%c🍕 SPAWNED FOOD PELLET ${pelletId} at (${startX}, ${startY}) with ${totalPelletEnergy} energy!`, 'color: lime; font-weight: bold');
+
+                  // Count food cells for verification
+                  let foodCellCount = 0;
+                  for (let y = 0; y < gridHeight; y++) {
+                      for (let x = 0; x < gridWidth; x++) {
+                          if (gridRef.current[y]?.[x]?.type === 'food') {
+                              foodCellCount++;
+                          }
+                      }
+                  }
+                  console.log(`Total food cells in grid: ${foodCellCount}`);
+
+                  return true; // Successfully placed food
+              }
           }
+
+          console.log("❌ Failed to find space for food after all attempts");
+          return false;
+      } catch (err) {
+          console.error("Error spawning food pellet:", err);
+          return false;
       }
   }, [isWithinBounds]);
 
@@ -347,8 +583,8 @@ const GOLSurvival = () => {
 
           const cell = gridRef.current[currentPathPoint.y]?.[currentPathPoint.x];
           if (!cell || cell.type === 'empty') {
-               console.warn(`Signal for ${tendrilId} on invalid grid cell type: ${cell?.type} at (${currentPathPoint.x}, ${currentPathPoint.y}). Stopping signal.`);
-               signalsToUpdate.push({ tendrilId, nextState: 'idle', nextPos: -1, fractionalPos: -1 }); // Reset signal
+              console.warn(`Signal for ${tendrilId} on invalid grid cell type: ${cell?.type} at (${currentPathPoint.x}, ${currentPathPoint.y}). Stopping signal.`);
+              signalsToUpdate.push({ tendrilId, nextState: 'idle', nextPos: -1, fractionalPos: -1 }); // Reset signal
               return; // Cell doesn't exist or is empty
           }
 
@@ -363,16 +599,8 @@ const GOLSurvival = () => {
 
           // Check for branch points between current and new integer position
           if (newIntPos > currentSignalPos) {
-              for (let checkPos = currentSignalPos + 1; checkPos <= newIntPos && checkPos < pathLength; checkPos++) {
-                  const checkPoint = tendril.path[checkPos];
-                  if (!checkPoint || !isWithinBounds(checkPoint.x, checkPoint.y)) continue;
-
-                  const gridCell = gridRef.current[checkPoint.y]?.[checkPoint.x];
-                  if (gridCell?.isBranchPoint) {
-                      // Found a branch point, attempt to propagate signal to branches
-                      propagateSignalToBranches(tendril, gridCell, checkPoint);
-                  }
-              }
+              // Specifically look for branch points that need signal propagation
+              checkForBranchPoints(tendril, currentSignalPos, newIntPos);
           }
 
           const nextPos = Math.min(newIntPos, pathLength - 1);
@@ -401,44 +629,28 @@ const GOLSurvival = () => {
       });
 
       return newlyReachedTips;
-  }, [isWithinBounds, getTendrilById]); // Added dependencies
+  }, [isWithinBounds, getTendrilById]);
 
-   // Helper for propagateSignal
-   const propagateSignalToBranches = (propagatingTendril, branchGridCell, branchPointCoords) => {
-       if (!branchGridCell?.isBranchPoint || !branchGridCell.tendrilId) return;
+  // New helper function to check for branch points
+  const checkForBranchPoints = (tendril, startPos, endPos) => {
+      if (!tendril || !tendril.path || tendril.path.length < 2) return;
 
-       const allTendrilIdsAtPoint = branchGridCell.tendrilId.split(',');
+      // Check each position within the range for branch points
+      for (let pos = startPos + 1; pos <= endPos && pos < tendril.path.length; pos++) {
+          const point = tendril.path[pos];
+          if (!point || !isWithinBounds(point.x, point.y)) continue;
 
-       allTendrilIdsAtPoint.forEach(branchTendrilId => {
-           if (branchTendrilId === propagatingTendril.id) return; // Don't propagate back to self
+          const cell = gridRef.current[point.y][point.x];
+          if (!cell) continue;
 
-           const branchTendril = getTendrilById(branchTendrilId);
-
-           // Check if branch is valid, ready for signal, and not the parent trying to signal back immediately
-           if (branchTendril &&
-               (branchTendril.state === 'growing' || branchTendril.state === 'connected') &&
-               branchTendril.signalState === 'idle' &&
-               branchTendril.parentId !== propagatingTendril.id) // Prevent parent signaling child immediately after child signals parent? (May need refinement)
-           {
-               // Find the index of the branch point within the branch's path
-               const branchPointIndexInBranch = branchTendril.path.findIndex(p =>
-                   p.x === branchPointCoords.x && p.y === branchPointCoords.y
-               );
-
-               if (branchPointIndexInBranch !== -1) {
-                   // Start signal propagation from this point in the branch
-                   // console.log(`  -> Propagating signal from ${propagatingTendril.id} to branch ${branchTendril.id} at index ${branchPointIndexInBranch}`);
-                   branchTendril.signalState = 'propagating';
-                   branchTendril.signalPosition = branchPointIndexInBranch;
-                   branchTendril.fractionalPos = branchPointIndexInBranch; // Start fractional pos here
-               } else {
-                    // This might happen if the branch point isn't perfectly aligned in the path data
-                    // Could add approximate matching later if needed
-                    console.warn(`Branch point (${branchPointCoords.x},${branchPointCoords.y}) not found in path of branch ${branchTendril.id}. Signal not propagated to branch.`);
-               }
-           }
-       });
-   };
+          // If this is a branch point, propagate signals
+          if (cell.isBranchPoint) {
+              console.log(`Found branch point at (${point.x}, ${point.y}) while processing tendril ${tendril.id}`);
+              // Use the external propagateSignalToBranches function
+              propagateSignalToBranches(tendril, cell, point);
+          }
+      }
+  };
 
   const triggerGrowthAtTips = useCallback((tendrilIds) => {
       if (!tendrilIds || tendrilIds.size === 0) return;
@@ -482,16 +694,26 @@ const GOLSurvival = () => {
   // Helper: Get Neighbors (adapted for survival)
   const getNeighbors = (x, y, currentSourceId) => {
       const neighbors = { empty: [], food: [], selfCollision: [], otherCollision: [] };
-      const absoluteDirections = DIRECTIONS.map(d => [d.dx, d.dy]);
+      // Make absolutely sure we're checking all 8 directions
+      const directions = [
+          [-1, -1], [0, -1], [1, -1],
+          [-1, 0],           [1, 0],
+          [-1, 1],  [0, 1],  [1, 1]
+      ];
 
-      for (const [dx, dy] of absoluteDirections) {
+      for (const [dx, dy] of directions) {
           const nx = x + dx;
           const ny = y + dy;
 
           if (!isWithinBounds(nx, ny)) continue;
 
-          const cell = gridRef.current[ny]?.[nx];
+          const cell = gridRef.current[ny][nx];
           if (!cell) continue;
+
+          // Debug individual cell
+          if (cell.type === 'food') {
+              console.log(`Found FOOD cell at (${nx},${ny}), pelletId: ${cell.foodPelletId}`);
+          }
 
           switch (cell.type) {
               case 'empty':
@@ -561,13 +783,12 @@ const GOLSurvival = () => {
       if (tendril.state !== 'growing' && tendril.state !== 'connected') return false;
       if (source.energy < CELL_ENERGY_COST) {
           tendril.state = 'blocked'; // Block if source can't afford growth
-          // console.log(`Tendril ${tendril.id} blocked - insufficient energy.`);
+          console.log(`%cTendril ${tendril.id} blocked - insufficient energy (${source.energy.toFixed(1)})`, 'color: orange');
           return false;
       }
 
       const currentHead = tendril.path[tendril.path.length - 1];
       const previousCell = tendril.path.length > 1 ? tendril.path[tendril.path.length - 2] : null;
-      const currentWeights = simParamsRef.current.directionWeights;
 
       if (!currentHead || !isWithinBounds(currentHead.x, currentHead.y)) {
           tendril.state = 'blocked';
@@ -575,11 +796,12 @@ const GOLSurvival = () => {
       }
 
       const neighbors = getNeighbors(currentHead.x, currentHead.y, tendril.sourceId);
+      console.log(`Tendril ${tendril.id} checking neighbors: empty=${neighbors.empty.length}, food=${neighbors.food.length}`);
 
       // --- Priority 1: Check for Food --- (Slime mold prioritizes food)
       if (neighbors.food.length > 0) {
           const foodTarget = neighbors.food[0]; // Target the first food cell found
-          // console.log(`Tendril ${tendril.id} moving towards food at (${foodTarget.x}, ${foodTarget.y})`);
+          console.log(`%cTendril ${tendril.id} found food at (${foodTarget.x}, ${foodTarget.y})!`, 'color: lime; font-weight: bold');
 
           // Consume source energy for the move
           source.energy -= CELL_ENERGY_COST;
@@ -636,6 +858,13 @@ const GOLSurvival = () => {
           const lastMoveDir = getLastMoveDirection(tendril);
           let weight = 0;
 
+          // Get current direction weights from sim parameters
+          const currentWeights = simParamsRef.current.directionWeights || [
+              0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
+              0.1, 0, 0.1,    // Left, Center, Right
+              0, 0, 0         // Backward-left, Backward, Backward-right
+          ];
+
           Object.entries(RELATIVE_DIRECTIONS).forEach(([key, relDir]) => {
               const absDir = relativeToAbsolute(relDir, lastMoveDir);
               if (absDir && Math.sign(dx) === Math.sign(absDir.dx) && Math.sign(dy) === Math.sign(absDir.dy)) {
@@ -691,162 +920,122 @@ const GOLSurvival = () => {
   }, [isWithinBounds, simParamsRef, handleFoodCollision, handleTendrilCollision, getTendrilById /* Add more deps */]);
 
   const attemptBranching = useCallback((parentTendril, source) => {
-      if (parentTendril.state !== 'growing' || // Can only branch from growing tendril
-          parentTendril.path.length < MIN_PATH_LENGTH_FOR_BRANCHING ||
-          Math.random() >= simParamsRef.current.branchChance) {
-          return; // Conditions not met
-      }
-
-      if (source.energy < CELL_ENERGY_COST) {
-          // console.log(`Branching skipped for ${parentTendril.id} - insufficient energy.`);
-          return; // Not enough energy to create branch cell
-      }
-
-      const headCell = parentTendril.path[parentTendril.path.length - 1];
-      const previousCell = parentTendril.path[parentTendril.path.length - 2];
-
-      // Find alternative valid neighbors (excluding the one just grown into if possible)
-      // Reuse neighbor calculation, but focus on alternatives
-      const neighbors = getNeighbors(previousCell.x, previousCell.y, parentTendril.sourceId); // Check neighbors of the cell *before* the head
-      const validEmptyNeighbors = neighbors.empty.filter(n =>
-          !(n.x === headCell.x && n.y === headCell.y) && // Exclude the cell just grown into
-          !parentTendril.path.some(p => p.x === n.x && p.y === n.y) // Avoid immediate overlap
-      );
-
-      if (validEmptyNeighbors.length === 0) return; // No alternative spots to branch into
-
-      // Simplified branching: just pick one random valid neighbor
-      // TODO: Could reintroduce weighting if desired
-      const branchTarget = validEmptyNeighbors[getRandomInt(validEmptyNeighbors.length)];
-
-      // *** Create the branch ***
-      source.energy -= CELL_ENERGY_COST; // Deduct energy for the new branch cell
-
-      const branchId = getUniqueTendrilId(parentTendril.sourceId);
-      const branchTendril = {
-          id: branchId,
-          sourceId: parentTendril.sourceId,
-          path: [headCell, branchTarget], // Branch starts from parent's head
-          state: 'growing',
-          signalState: 'idle', // Start idle
-          signalPosition: -1,
-          fractionalPos: 0,
-          opacity: 1,
-          isBranch: true,
-          parentId: parentTendril.id,
-          creationFrame: frameCountRef.current,
-      };
-      tendrilsRef.current.set(branchId, branchTendril);
-      // console.log(`  -> Branched: ${branchId} from ${parentTendril.id}`);
-
-      // Update Grid for the new branch cell
-      const branchGridCell = gridRef.current[branchTarget.y][branchTarget.x];
-      branchGridCell.type = 'tendril';
-      branchGridCell.color = getColorFromAge(0);
-      branchGridCell.tendrilId = branchId;
-      branchGridCell.sourceId = parentTendril.sourceId;
-      branchGridCell.opacity = 1;
-      branchGridCell.creationFrame = frameCountRef.current;
-
-      // Mark the Branch Point on the parent's head cell
-      const headGridCell = gridRef.current[headCell.y][headCell.x];
-      headGridCell.isBranchPoint = true;
-      const existingIds = headGridCell.tendrilId ? headGridCell.tendrilId.split(',') : [];
-      if (!existingIds.includes(parentTendril.id)) existingIds.push(parentTendril.id);
-      if (!existingIds.includes(branchId)) existingIds.push(branchId);
-      headGridCell.tendrilId = existingIds.join(',');
-      // Optionally add temporary visual cue for branch point in draw function
-
-  }, [simParamsRef, getTendrilById /* Add more deps */ ]);
-
-  const handleFoodCollision = useCallback((tendril, foodCellCoord) => {
-      const source = getSourceById(tendril.sourceId);
-      const foodCell = gridRef.current[foodCellCoord.y]?.[foodCellCoord.x];
-
-      if (!source || !foodCell || foodCell.type !== 'food' || !foodCell.foodPelletId) {
-          console.warn(`Invalid food collision call: source=${source?.id}, cellType=${foodCell?.type}, pelletId=${foodCell?.foodPelletId}`);
-          return; // Invalid state
-      }
-
-      const pelletId = foodCell.foodPelletId;
-      const pellet = foodPelletsRef.current.find(p => p.id === pelletId);
-      if (!pellet) {
-          console.warn(`Food pellet ${pelletId} not found in foodPelletsRef.`);
-          // Clean up orphaned food cell on grid?
-          foodCell.type = 'empty';
-          foodCell.color = BACKGROUND_COLOR;
-          foodCell.foodPelletId = null;
-          return;
-      }
-
-      const cellKey = `${foodCellCoord.x},${foodCellCoord.y}`;
-      const foodData = pellet.cells.get(cellKey);
-
-      if (!foodData) {
-           console.warn(`Food cell (${cellKey}) not found in data for pellet ${pelletId}.`);
-           // Cell already consumed? Mark as empty on grid just in case.
-           foodCell.type = 'empty';
-           foodCell.color = BACKGROUND_COLOR;
-           foodCell.foodPelletId = null;
-           return;
-      }
-
-      // 1. Add energy to source
-      const energyGained = foodData.energy;
-      source.energy += energyGained;
-      pellet.remainingEnergy -= energyGained;
-      console.log(`Tendril ${tendril.id} consumed food at (${foodCellCoord.x}, ${foodCellCoord.y}). Source ${source.id} gained ${energyGained} E. New total: ${source.energy.toFixed(0)} E.`);
-
-      // 2. Update grid cell to become part of the tendril
-      foodCell.type = 'tendril';
-      foodCell.color = getColorFromAge(0); // Becomes a new tendril cell
-      foodCell.tendrilId = tendril.id; // Assign tendril ID
-      foodCell.sourceId = tendril.sourceId;
-      foodCell.foodPelletId = null; // No longer food
-      foodCell.creationFrame = frameCountRef.current; // Treat as new cell for age
-
-      // 3. Remove cell from pellet data
-      pellet.cells.delete(cellKey);
-
-      // Optional: Check if pellet is fully consumed
-      if (pellet.cells.size === 0) {
-          console.log(`Food pellet ${pelletId} fully consumed.`);
-          foodPelletsRef.current = foodPelletsRef.current.filter(p => p.id !== pelletId);
-          // TODO: Potentially trigger signal emission from this location later
-          // Mark the location? Create a temporary 'food source' object?
-      }
-
-      // TODO: Trigger path optimization after consuming food?
-      // triggerPathOptimization(source.id, null, foodCellCoord); // Pass null for second source ID
-
-  }, [getSourceById]); // Dependencies
-
-  const handleTendrilCollision = useCallback((tendril1, tendril2) => {
-      // Basic collision handling: block both tendrils involved
-      if (!tendril1 || !tendril2) return;
-
-      // Only handle collisions between tendrils from different sources for now
-      if (tendril1.sourceId !== tendril2.sourceId) {
-          console.log(`%cCollision detected: Tendril ${tendril1.id} (Source ${tendril1.sourceId}) and Tendril ${tendril2.id} (Source ${tendril2.sourceId})`, 'color: yellow');
-          // Block both tendrils - prevents further growth into each other
-          tendril1.state = 'blocked';
-          tendril2.state = 'blocked';
-
-          // Mark the grid cell as a potential connection point (visualisation TBD)
-          const collisionPoint = tendril1.path[tendril1.path.length - 1]; // Collision happens at tendril1's new head
-          if (isWithinBounds(collisionPoint.x, collisionPoint.y)) {
-              const cell = gridRef.current[collisionPoint.y][collisionPoint.x];
-              if (cell) {
-                  cell.isConnectionPoint = true; // Add a flag
-                  // Maybe change color temporarily later in draw function
-              }
+      // Add more logging to debug branching
+      try {
+          // Check basic conditions
+          if (parentTendril.state !== 'growing') {
+              // console.log(`Branch skipped: ${parentTendril.id} not in growing state`);
+              return false;
           }
 
-          // TODO: Implement cooperation logic later (merge energy, path optimization)
+          if (parentTendril.path.length < MIN_PATH_LENGTH_FOR_BRANCHING) {
+              // console.log(`Branch skipped: ${parentTendril.id} too short (${parentTendril.path.length})`);
+              return false;
+          }
+
+          // Randomize based on branch chance
+          if (Math.random() >= simParamsRef.current.branchChance) {
+              return false;
+          }
+
+          // Energy check
+          if (source.energy < CELL_ENERGY_COST) {
+              console.log(`Branching skipped for ${parentTendril.id} - insufficient energy (${source.energy})`);
+              return false;
+          }
+
+          console.log(`Attempting to create branch from tendril ${parentTendril.id}`);
+
+          // Get the tendril head and previous cell
+          const pathLength = parentTendril.path.length;
+          if (pathLength < 2) return false; // Need at least 2 cells
+
+          const headCell = parentTendril.path[pathLength - 1];
+          const previousCell = parentTendril.path[pathLength - 2];
+
+          if (!headCell || !previousCell) {
+              console.log(`Invalid head/previous cells in tendril ${parentTendril.id}`);
+              return false;
+          }
+
+          // Find all empty neighbors of the head cell
+          const neighbors = getNeighbors(headCell.x, headCell.y, parentTendril.sourceId);
+
+          // Filter to just empty cells, excluding cells already in the path
+          const validBranchTargets = neighbors.empty.filter(neighbor =>
+              !parentTendril.path.some(pathPoint =>
+                  pathPoint.x === neighbor.x && pathPoint.y === neighbor.y
+              )
+          );
+
+          if (validBranchTargets.length === 0) {
+              // console.log(`No valid branch targets for tendril ${parentTendril.id}`);
+              return false;
+          }
+
+          // Pick a random direction for the branch
+          const branchTarget = validBranchTargets[getRandomInt(validBranchTargets.length)];
+          console.log(`Selected branch target at (${branchTarget.x}, ${branchTarget.y}) from ${validBranchTargets.length} options`);
+
+          // Create the branch
+          source.energy -= CELL_ENERGY_COST; // Deduct energy for the branch
+          const branchId = getUniqueTendrilId(parentTendril.sourceId);
+
+          // Create branch path starting from head cell
+          const branchTendril = {
+              id: branchId,
+              sourceId: parentTendril.sourceId,
+              path: [
+                  // Include the head cell as branch point
+                  { x: headCell.x, y: headCell.y },
+                  // Add the branch target as first growth cell
+                  { x: branchTarget.x, y: branchTarget.y }
+              ],
+              state: 'growing',
+              signalState: 'idle',
+              signalPosition: -1,
+              fractionalPos: 0,
+              opacity: 1,
+              isBranch: true,
+              parentId: parentTendril.id,
+              creationFrame: frameCountRef.current,
+          };
+
+          // Add to tendrils collection
+          tendrilsRef.current.set(branchId, branchTendril);
+          console.log(`%cCreated branch ${branchId} from ${parentTendril.id}`, 'color: magenta; font-weight: bold');
+
+          // Mark the branch point on the grid
+          const headGridCell = gridRef.current[headCell.y][headCell.x];
+          if (headGridCell) {
+              headGridCell.isBranchPoint = true;
+
+              // Add both tendril IDs to the cell
+              const existingIds = (headGridCell.tendrilId || '').split(',').filter(Boolean);
+              if (!existingIds.includes(parentTendril.id)) existingIds.push(parentTendril.id);
+              if (!existingIds.includes(branchId)) existingIds.push(branchId);
+
+              headGridCell.tendrilId = existingIds.join(',');
+              console.log(`Branch point cell at (${headCell.x}, ${headCell.y}) marked with tendrils: ${headGridCell.tendrilId}`);
+          }
+
+          // Mark the branch target cell on the grid
+          const branchGridCell = gridRef.current[branchTarget.y][branchTarget.x];
+          if (branchGridCell) {
+              branchGridCell.type = 'tendril';
+              branchGridCell.color = getColorFromAge(0); // Young color
+              branchGridCell.tendrilId = branchId;
+              branchGridCell.sourceId = parentTendril.sourceId;
+              branchGridCell.opacity = 1;
+              branchGridCell.creationFrame = frameCountRef.current;
+          }
+
+          return true; // Branch created successfully
+      } catch (err) {
+          console.error("Error in attemptBranching:", err);
+          return false;
       }
-      // Note: Collisions between tendrils of the *same* source are not explicitly handled here
-      // and might still overlap depending on growth timing.
-  }, [isWithinBounds]);
+  }, [simParamsRef, getNeighbors, getTendrilById]);
 
   const triggerPathOptimization = useCallback((sourceId1, sourceId2, connectionPoint) => {
       // TODO: Implement path optimization logic (potentially complex)
@@ -857,337 +1046,645 @@ const GOLSurvival = () => {
   const updateFadingTendrils = useCallback(() => {
       const tendrilsToRemove = new Set();
       let energyRecovered = 0; // Track recovered energy for logging
+      let fadingCount = 0;
+      let reabsorbingCount = 0;
+      let debugFadingFull = frameCountRef.current % 300 === 0; // Detailed debug every 5 seconds
+
+      // Count fading and reabsorbing tendrils
+      tendrilsRef.current.forEach((tendril) => {
+          if (tendril.state === 'fading') fadingCount++;
+          if (tendril.state === 'reabsorbing') reabsorbingCount++;
+      });
+
+      if (debugFadingFull && (fadingCount > 0 || reabsorbingCount > 0)) {
+          console.log(`%cFADING STATUS: ${fadingCount} fading, ${reabsorbingCount} reabsorbing tendrils`, 'color: purple');
+      }
 
       tendrilsRef.current.forEach((tendril, tendrilId) => {
           if (tendril.state === 'fading' || tendril.state === 'reabsorbing') {
+              const oldOpacity = tendril.opacity;
               const fadeSpeed = tendril.state === 'reabsorbing' ? REABSORPTION_FADE_SPEED : STANDARD_FADE_SPEED;
               tendril.opacity -= fadeSpeed;
 
-              if (tendril.opacity <= 0) {
+              if (debugFadingFull && tendril.id.endsWith('0')) { // Just log a few samples
+                  console.log(`Tendril ${tendril.id} opacity: ${oldOpacity.toFixed(3)} -> ${tendril.opacity.toFixed(3)}, fadeSpeed: ${fadeSpeed}`);
+              }
+
+              // For visual effect, update the grid cells' opacity
+              if (tendril.opacity <= 0.05) {
+                  // When nearly invisible, just remove it
                   tendrilsToRemove.add(tendrilId);
 
-                  // If reabsorbing, recover energy before removal
+                  // If reabsorbing, recover energy
                   if (tendril.state === 'reabsorbing') {
                       const source = getSourceById(tendril.sourceId);
                       if (source) {
-                          // Path includes the starting point, so length - 1 is the number of grown cells
                           const cellsToRecover = Math.max(0, tendril.path.length - 1);
                           const recovered = cellsToRecover * CELL_ENERGY_COST;
                           source.energy += recovered;
                           energyRecovered += recovered;
-                           // console.log(`Reabsorbed ${tendril.id} (${cellsToRecover} cells). Recovered ${recovered.toFixed(0)} E for source ${source.id}. New total: ${source.energy.toFixed(0)} E.`);
                       }
                   }
+              } else {
+                  // Update cell opacities
+                  tendril.path.forEach(point => {
+                      if (isWithinBounds(point.x, point.y)) {
+                          const cell = gridRef.current[point.y][point.x];
+                          if (cell && cell.tendrilId && cell.tendrilId.includes(tendrilId)) {
+                              // For multi-tendril cells, be careful about opacity
+                              if (cell.tendrilId === tendrilId || cell.tendrilId.split(',')[0] === tendrilId) {
+                                  cell.opacity = tendril.opacity;
+                              }
+                          }
+                      }
+                  });
               }
           }
       });
 
       if (tendrilsToRemove.size > 0) {
-          // console.log(`%cupdateFadingTendrils: Removing ${tendrilsToRemove.size} tendrils. Recovered ${energyRecovered.toFixed(0)} E.`, 'color: gray');
-          // console.log(`Removing ${tendrilsToRemove.size} faded/reabsorbed tendrils. Recovered ${energyRecovered.toFixed(0)} E from reabsorption.`);
+          console.log(`%cRemoving ${tendrilsToRemove.size} fully faded tendrils. Recovered ${energyRecovered.toFixed(0)} energy.`, 'color: gray');
 
-          // --- Grid Cleanup --- Need to be careful with shared cells (branch points)
-          const cellsToReset = new Map(); // Track cells potentially needing reset (key: "x,y")
-
+          // Clear cells from grid
           tendrilsToRemove.forEach(tendrilId => {
-              const removedTendril = tendrilsRef.current.get(tendrilId);
-              if (!removedTendril) return;
+              const tendril = tendrilsRef.current.get(tendrilId);
+              if (!tendril) return;
 
-              // Add all cells in the removed path to the potential reset list
-              removedTendril.path.forEach(p => {
-                  const key = `${p.x},${p.y}`;
-                  if (!cellsToReset.has(key)) {
-                      cellsToReset.set(key, new Set());
+              // Clear grid cells
+              tendril.path.forEach(point => {
+                  if (isWithinBounds(point.x, point.y)) {
+                      const cell = gridRef.current[point.y][point.x];
+                      if (cell && cell.tendrilId) {
+                          const currentIds = cell.tendrilId.split(',');
+                          const remainingIds = currentIds.filter(id => id !== tendrilId);
+
+                          if (remainingIds.length === 0) {
+                              // Reset cell to empty
+                              if (cell.type !== 'source') { // Don't reset sources
+                                  gridRef.current[point.y][point.x] = {
+                                      type: 'empty',
+                                      color: BACKGROUND_COLOR,
+                                      tendrilId: null,
+                                      sourceId: null,
+                                      foodPelletId: null,
+                                      opacity: 1,
+                                      creationFrame: 0,
+                                      isBranchPoint: false,
+                                      isConnectionPoint: false
+                                  };
+                              } else {
+                                  // Just clear the tendrilId for source cells
+                                  cell.tendrilId = null;
+                              }
+                          } else {
+                              // Update with remaining IDs
+                              cell.tendrilId = remainingIds.join(',');
+                              cell.isBranchPoint = remainingIds.length > 1;
+                          }
+                      }
                   }
-                  cellsToReset.get(key).add(removedTendril.id);
               });
 
-              // Actually remove from the Map
+              // Remove from tendril map
               tendrilsRef.current.delete(tendrilId);
-          });
-
-          // Now process the grid cells that were part of removed tendrils
-          cellsToReset.forEach((removedIdsOnCell, key) => {
-              const [x, y] = key.split(',').map(Number);
-              if (!isWithinBounds(x, y)) return;
-
-              const cell = gridRef.current[y][x];
-              if (!cell || cell.type === 'empty' || cell.type === 'source') return; // Skip empty/source cells
-
-              if (cell.tendrilId) {
-                  const currentIds = cell.tendrilId.split(',');
-                  // Filter out IDs that were just removed
-                  const remainingIds = currentIds.filter(id => !removedIdsOnCell.has(id));
-
-                  if (remainingIds.length === 0) {
-                      // No tendrils left on this cell, reset it to empty
-                      gridRef.current[y][x] = {
-                          type: 'empty',
-                          color: BACKGROUND_COLOR,
-                          tendrilId: null,
-                          sourceId: null,
-                          foodPelletId: null,
-                          opacity: 1,
-                          isBranchPoint: false,
-                          isConnectionPoint: false,
-                          creationFrame: 0,
-                      };
-                  } else {
-                      // Update the cell with the remaining tendril IDs
-                      cell.tendrilId = remainingIds.join(',');
-                      // Recalculate opacity/state? Maybe just leave it based on one of the remaining?
-                      const firstRemainingTendril = getTendrilById(remainingIds[0]);
-                      cell.opacity = firstRemainingTendril ? firstRemainingTendril.opacity : 1;
-                      cell.isBranchPoint = remainingIds.length > 1; // Still a branch point if >1 left
-                  }
-              } else {
-                   // Cell had no tendril ID but was in a path? Reset just in case.
-                   gridRef.current[y][x] = {
-                       type: 'empty',
-                       color: BACKGROUND_COLOR,
-                       tendrilId: null, sourceId: null, foodPelletId: null,
-                       opacity: 1, isBranchPoint: false, isConnectionPoint: false, creationFrame: 0,
-                   };
-              }
           });
       }
   }, [getSourceById, getTendrilById, isWithinBounds]);
 
   const verifyPathIntegrity = useCallback(() => {
-       // More robust check: Iteratively mark disconnected branches
+       // First, check if any sources have run out of energy
+       sourcesRef.current.forEach(source => {
+           if (source.energy <= 0 && source.isActive) {
+               // Mark source as inactive when energy is depleted
+               source.isActive = false;
+               console.log(`%cSource ${source.id} has run out of energy and is now inactive`, 'color: orange; font-weight: bold');
+
+               // Mark all active tendrils from this source for fading
+               let markedCount = 0;
+               tendrilsRef.current.forEach((tendril) => {
+                   if (tendril.sourceId === source.id &&
+                       tendril.state !== 'fading' &&
+                       tendril.state !== 'reabsorbing') {
+
+                       tendril.state = 'fading';
+                       markedCount++;
+                   }
+               });
+
+               if (markedCount > 0) {
+                   console.log(`Marked ${markedCount} tendrils for fading due to source energy depletion`);
+               }
+           }
+       });
+
+       // Log the current state of all tendrils periodically
+       if (frameCountRef.current % 150 === 0) {
+           const states = {};
+           tendrilsRef.current.forEach((tendril) => {
+               states[tendril.state] = (states[tendril.state] || 0) + 1;
+           });
+           console.log('Current tendril states:', states);
+       }
+
+       // Check branch integrity
        let changed = true;
        let markedThisPass = 0;
-       const maxPasses = tendrilsRef.current.size; // Safety break
+       const maxPasses = tendrilsRef.current.size;
        let passes = 0;
 
        while (changed && passes < maxPasses) {
            changed = false;
            markedThisPass = 0;
+
            tendrilsRef.current.forEach((tendril) => {
-               // Only check active branches not already marked
-               if (tendril.isBranch && tendril.parentId && tendril.state !== 'fading' && tendril.state !== 'reabsorbing') {
-                   const parentTendril = getTendrilById(tendril.parentId);
-                   if (!parentTendril || parentTendril.state === 'fading' || parentTendril.state === 'reabsorbing') {
-                       tendril.state = 'fading';
-                       markedThisPass++;
-                       changed = true;
+               // Only check active tendrils not already marked for fading
+               if (tendril.state !== 'fading' && tendril.state !== 'reabsorbing') {
+
+                   // Check branch parent connection
+                   if (tendril.isBranch && tendril.parentId) {
+                       const parentTendril = getTendrilById(tendril.parentId);
+                       if (!parentTendril ||
+                           parentTendril.state === 'fading' ||
+                           parentTendril.state === 'reabsorbing') {
+
+                           tendril.state = 'fading';
+                           markedThisPass++;
+                           changed = true;
+                       }
+                   }
+
+                   // Check if main tendril has valid path to source
+                   if (!tendril.isBranch) {
+                       const source = getSourceById(tendril.sourceId);
+                       if (!source || !source.isActive) {
+                           tendril.state = 'fading';
+                           markedThisPass++;
+                           changed = true;
+                       } else {
+                           // Check if tendril path starts at source
+                           const firstPoint = tendril.path[0];
+                           if (!firstPoint || firstPoint.x !== source.x || firstPoint.y !== source.y) {
+                               tendril.state = 'fading';
+                               markedThisPass++;
+                               changed = true;
+                           }
+                       }
                    }
                }
-               // Also check root tendrils - if blocked for too long? (Optional enhancement)
            });
            passes++;
        }
 
-       // if (markedThisPass > 0 || passes > 1) {
-       //     console.log(`Path Integrity: Marked ${markedThisPass} branches as fading. Completed in ${passes} passes.`);
-       // }
-  }, [getTendrilById]);
+       if (markedThisPass > 0) {
+           console.log(`%cPath Integrity: Marked ${markedThisPass} tendrils as fading (Pass ${passes})`, 'color: orange');
+       }
+  }, [getTendrilById, getSourceById]);
 
   const checkSourcesForRegeneration = useCallback(() => {
-      // TODO: Implement source regeneration logic if all its tendrils are gone
-  }, []);
+      // Only run regeneration logic if we have inactive sources
+      const inactiveSources = sourcesRef.current.filter(s => !s.isActive);
+      if (inactiveSources.length === 0) return;
+
+      // Loop through inactive sources
+      inactiveSources.forEach(source => {
+          // If the source has accumulated enough energy from food consumption, regenerate it
+          if (source.energy >= INITIAL_SOURCE_ENERGY * 0.25) { // Require 25% of initial energy to regenerate
+              source.isActive = true;
+              console.log(`%cSource ${source.id} regenerated with ${source.energy.toFixed(0)} energy!`, 'color: lime; font-weight: bold');
+
+              // Create a new tendril from this source
+              const tendrilId = getUniqueTendrilId(source.id);
+              const newTendril = {
+                  id: tendrilId,
+                  sourceId: source.id,
+                  path: [{ x: source.x, y: source.y }],
+                  state: 'growing',
+                  signalState: 'idle',
+                  signalPosition: -1,
+                  fractionalPos: 0,
+                  opacity: 1,
+                  isBranch: false,
+                  parentId: null,
+                  creationFrame: frameCountRef.current,
+              };
+
+              tendrilsRef.current.set(tendrilId, newTendril);
+
+              // Mark the source cell as having this tendril
+              if (isWithinBounds(source.x, source.y)) {
+                  const cell = gridRef.current[source.y][source.x];
+                  if (cell) {
+                      cell.tendrilId = tendrilId;
+                      cell.type = 'source'; // Ensure it's still marked as a source
+                      cell.color = SOURCE_COLOR;
+                      cell.opacity = 1;
+                  }
+              }
+          }
+          // If source has some energy but not enough to regenerate, log its progress
+          else if (source.energy > 0) {
+              if (frameCountRef.current % 300 === 0) { // Only log occasionally
+                  const percentage = (source.energy / (INITIAL_SOURCE_ENERGY * 0.25) * 100).toFixed(0);
+                  console.log(`Source ${source.id} has ${source.energy.toFixed(0)} energy (${percentage}% of needed energy for regeneration)`);
+              }
+          }
+      });
+  }, [isWithinBounds]);
 
 
   const drawGridAndElements = useCallback(() => {
-       const canvas = canvasRef.current;
-       if (!canvas) return;
-       const context = canvas.getContext('2d');
-       if (!context || !gridRef.current?.length) return;
+       try {
+           const canvas = canvasRef.current;
+           if (!canvas) return;
 
-       const { width: canvasWidth, height: canvasHeight } = canvas;
-       context.clearRect(0, 0, canvasWidth, canvasHeight);
+           const context = canvas.getContext('2d');
+           if (!context || !gridRef.current || !Array.isArray(gridRef.current) || gridRef.current.length === 0) {
+               console.warn("Invalid grid or context in drawGridAndElements");
+               return;
+           }
 
-       // 1. Draw Grid Cells (Tendrils, Sources, Food)
-       for (let y = 0; y < gridDimensions.current.height; y++) {
-           for (let x = 0; x < gridDimensions.current.width; x++) {
-               const cell = gridRef.current[y][x];
-               if (!cell || cell.type === 'empty') continue;
+           // Get grid dimensions safely
+           const dims = gridDimensions.current || { width: 0, height: 0 };
+           const gridHeight = gridRef.current.length;
+           const gridWidth = gridRef.current[0]?.length || 0;
 
-               let drawColor = BACKGROUND_COLOR;
-               let cellOpacity = cell.opacity;
+           if (gridWidth === 0 || gridHeight === 0) {
+               console.warn("Grid has zero dimensions");
+               return;
+           }
 
-               switch (cell.type) {
-                   case 'source':
-                       drawColor = SOURCE_COLOR;
-                       break;
-                   case 'tendril': {
-                       const tendril = cell.tendrilId ? getTendrilById(cell.tendrilId.split(',')[0]) : null; // Get first tendril for state info
-                       if (tendril) {
-                           cellOpacity = tendril.opacity; // Base opacity from tendril
-                           const age = calculateAge(cell.creationFrame, frameCountRef.current);
+           // Get canvas dimensions
+           const canvasWidth = canvas.width;
+           const canvasHeight = canvas.height;
 
-                           if (tendril.state === 'reabsorbing') {
-                               // Interpolate color for reabsorbing
-                               const t = tendril.opacity; // Opacity goes 1 -> 0
-                               drawColor = interpolateColors(REABSORBING_COLOR_END, REABSORBING_COLOR_START, t);
-                           } else if (tendril.state === 'fading') {
-                               drawColor = FADING_COLOR; // Simple fade color
-                           } else {
-                               // Normal growing/connected/blocked state - use age color
-                               drawColor = getColorFromAge(age);
-                               if (cell.isBranchPoint /* && shouldHighlightBranchPoint */) {
-                                   // Optional: Highlight branch points temporarily
-                                   // drawColor = BRANCH_POINT_COLOR;
-                               }
-                           }
-                       } else {
-                           // Orphaned grid cell? Should be cleaned up. Draw as background.
-                           drawColor = BACKGROUND_COLOR;
-                           cellOpacity = 0;
-                       }
-                       break;
+           // Clear canvas
+           context.clearRect(0, 0, canvasWidth, canvasHeight);
+
+           // Count cell types occasionally
+           if (frameCountRef.current % 120 === 0) {
+               let cellCounts = { empty: 0, source: 0, tendril: 0, food: 0 };
+               for (let y = 0; y < gridHeight; y++) {
+                   if (!gridRef.current[y]) continue;
+                   for (let x = 0; x < gridWidth; x++) {
+                       const cellType = gridRef.current[y][x]?.type || 'empty';
+                       cellCounts[cellType] = (cellCounts[cellType] || 0) + 1;
                    }
-                   case 'food':
-                       drawColor = FOOD_COLOR;
-                       break;
-                   // Add cases for connection points etc. if needed
                }
-
-               context.globalAlpha = cellOpacity;
-               context.fillStyle = drawColor;
-               context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+               console.log(`Grid cell counts:`, cellCounts);
            }
+
+           // Draw grid cells
+           for (let y = 0; y < gridHeight; y++) {
+               if (!gridRef.current[y] || !Array.isArray(gridRef.current[y])) continue;
+
+               for (let x = 0; x < gridWidth; x++) {
+                   const cell = gridRef.current[y][x];
+                   if (!cell) continue;
+
+                   // Default values if cells are incomplete
+                   let drawColor = BACKGROUND_COLOR;
+                   let cellOpacity = cell.opacity || 1.0;
+
+                   // Skip empty cells for performance
+                   if (cell.type === 'empty') continue;
+
+                   // Handle different cell types
+                   switch (cell.type) {
+                       case 'source':
+                           drawColor = SOURCE_COLOR;
+                           break;
+
+                       case 'food':
+                           drawColor = FOOD_COLOR;
+                           // Make food pulse slightly for visibility
+                           const pulseAmount = Math.sin(frameCountRef.current * 0.1) * 0.3;
+                           cellOpacity = 0.7 + (isNaN(pulseAmount) ? 0 : pulseAmount);
+
+                           // Draw food with extra visibility
+                           context.globalAlpha = cellOpacity;
+                           context.fillStyle = drawColor;
+
+                           // Draw slightly larger for better visibility
+                           const foodSize = CELL_SIZE * 1.5;
+                           const offset = (foodSize - CELL_SIZE) / 2;
+                           context.fillRect(
+                               x * CELL_SIZE - offset,
+                               y * CELL_SIZE - offset,
+                               foodSize, foodSize
+                           );
+                           continue; // Skip the standard drawing for food
+
+                       case 'tendril': {
+                           // Extract basic info safely
+                           const tendrilIds = (cell.tendrilId || '').split(',').filter(Boolean);
+
+                           // If we have no valid tendril IDs, treat as background
+                           if (tendrilIds.length === 0) {
+                               drawColor = BACKGROUND_COLOR;
+                               cellOpacity = 0;
+                               break;
+                           }
+
+                           // Get the first tendril (primary owner)
+                           const tendril = getTendrilById(tendrilIds[0]);
+
+                           if (tendril) {
+                               // Base opacity from tendril
+                               cellOpacity = tendril.opacity || 1.0;
+
+                               // Calculate age and determine color
+                               const creationFrame = cell.creationFrame || 0;
+                               const age = calculateAge(creationFrame, frameCountRef.current);
+
+                               if (tendril.state === 'reabsorbing') {
+                                   // Use opacity for interpolation
+                                   const t = tendril.opacity || 0;
+                                   drawColor = interpolateColors(REABSORBING_COLOR_END, REABSORBING_COLOR_START, t);
+                               } else if (tendril.state === 'fading') {
+                                   drawColor = FADING_COLOR;
+                               } else {
+                                   // Normal growing/connected/blocked state
+                                   drawColor = getColorFromAge(age);
+                               }
+
+                               // Highlight branch points
+                               if (cell.isBranchPoint) {
+                                   try {
+                                       // Safety check for valid color
+                                       if (typeof drawColor === 'string' && drawColor.startsWith('#')) {
+                                           const [r, g, b] = parseHex(drawColor);
+
+                                           // Brighten by 20% safely
+                                           const brightenFactor = 1.2;
+                                           const r2 = Math.min(255, Math.floor(r * brightenFactor));
+                                           const g2 = Math.min(255, Math.floor(g * brightenFactor));
+                                           const b2 = Math.min(255, Math.floor(b * brightenFactor));
+
+                                           drawColor = `#${r2.toString(16).padStart(2, '0')}${
+                                               g2.toString(16).padStart(2, '0')}${
+                                               b2.toString(16).padStart(2, '0')}`;
+                                       }
+                                   } catch (colorErr) {
+                                       console.error("Error brightening branch point:", colorErr);
+                                       // Fall back to original color
+                                   }
+                               }
+                           } else {
+                               // Orphaned grid cell - display as background
+                               drawColor = BACKGROUND_COLOR;
+                               cellOpacity = 0;
+                           }
+                           break;
+                       }
+                   }
+
+                   // Standard drawing for non-food cells
+                   context.globalAlpha = cellOpacity;
+                   context.fillStyle = drawColor;
+                   context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+               }
+           }
+
+           // Reset global alpha
+           context.globalAlpha = 1.0;
+
+           // Draw signals
+           context.fillStyle = SIGNAL_COLOR;
+           tendrilsRef.current.forEach(tendril => {
+               if (tendril && tendril.signalState === 'propagating' &&
+                   tendril.signalPosition >= 0 &&
+                   tendril.path && Array.isArray(tendril.path) &&
+                   tendril.signalPosition < tendril.path.length) {
+
+                   const signalCoord = tendril.path[tendril.signalPosition];
+                   if (signalCoord && isWithinBounds(signalCoord.x, signalCoord.y)) {
+                       // Draw signal with enhanced visibility
+                       const opacity = Math.min(1.0, (tendril.opacity || 1.0) * PULSE_VISIBILITY);
+                       context.globalAlpha = opacity;
+                       context.fillRect(
+                           signalCoord.x * CELL_SIZE,
+                           signalCoord.y * CELL_SIZE,
+                           CELL_SIZE, CELL_SIZE
+                       );
+                   }
+               }
+           });
+
+           // Reset again
+           context.globalAlpha = 1.0;
+
+           // Draw energy info for sources
+           if (sourcesRef.current && Array.isArray(sourcesRef.current)) {
+               context.font = '12px monospace';
+               sourcesRef.current.forEach((source, index) => {
+                   if (source) {
+                       const energyPercent = Math.floor(((source.energy || 0) / INITIAL_SOURCE_ENERGY) * 100);
+                       const energyText = `S${index}: ${energyPercent}%`;
+
+                       // Color based on energy level
+                       if (source.isActive) {
+                           if (energyPercent > 66) context.fillStyle = '#10B981'; // Green
+                           else if (energyPercent > 33) context.fillStyle = '#F59E0B'; // Yellow
+                           else context.fillStyle = '#EF4444'; // Red
+                       } else {
+                           context.fillStyle = '#6B7280'; // Gray
+                       }
+
+                       context.fillText(energyText, 10, 20 + index * 15);
+                   }
+               });
+           }
+       } catch (err) {
+           console.error("Error in drawGridAndElements:", err);
        }
-       context.globalAlpha = 1.0; // Reset global alpha
-
-       // 2. Draw Propagating Signals (Overlay)
-       context.fillStyle = SIGNAL_COLOR;
-       tendrilsRef.current.forEach(tendril => {
-           if (tendril.signalState === 'propagating' && tendril.signalPosition >= 0 && tendril.signalPosition < tendril.path.length) {
-               const signalCoord = tendril.path[tendril.signalPosition];
-               if (isWithinBounds(signalCoord.x, signalCoord.y)) {
-                   // Enhanced visibility (draw brighter/larger or with tail)
-                   context.globalAlpha = Math.min(1.0, tendril.opacity * PULSE_VISIBILITY);
-                   context.fillRect(signalCoord.x * CELL_SIZE, signalCoord.y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-                   // TODO: Implement tail effect if desired
-               }
-           }
-       });
-       context.globalAlpha = 1.0;
-
-       // 3. Draw UI Info (e.g., Energy Levels)
-       context.font = '12px Inter';
-       context.fillStyle = 'white';
-       sourcesRef.current.forEach((source, index) => {
-           const text = `Source ${source.id}: ${source.energy.toFixed(0)} E`;
-           context.fillText(text, 10, 20 + index * 15);
-       });
-
-  }, [getTendrilById, isWithinBounds]); // Add dependencies as needed
+  }, [getTendrilById, isWithinBounds, calculateAge]);
 
   // --- Animation Loop ---
    const render = useCallback((timestamp) => {
-       if (error) {
-           console.error("Animation loop stopped due to error.");
-           return;
+       try {
+           if (error) {
+               console.error("Animation loop stopped due to error:", error);
+               return;
+           }
+
+           const canvas = canvasRef.current;
+           if (!canvas) {
+               console.warn("Canvas reference not available in render loop");
+               return;
+           }
+
+           // First time frame initialization log
+           if (frameCountRef.current === 0) {
+               console.log("%c🎮 GOLSurvival COMPONENT STARTED", "color: yellow; font-size: 16px; font-weight: bold");
+           }
+
+           const prevTime = currentTimeRef.current || timestamp;
+           currentTimeRef.current = timestamp;
+           const deltaTime = timestamp - prevTime;
+
+           // Update frame counter
+           frameCountRef.current++;
+
+           // Performance logging
+           if(frameCountRef.current % 300 === 0) {
+               console.log(`%cFrame: ${frameCountRef.current} - DeltaTime: ${deltaTime.toFixed(2)}ms, FPS: ${(1000/deltaTime).toFixed(1)}`, 'color: gray');
+           }
+
+           // FOOD SPAWNING - Try every 2 seconds
+           if (frameCountRef.current % 120 === 0) {
+               try {
+                   // Check if we already have a reasonable amount of food
+                   const currentFoodPellets = foodPelletsRef.current.length;
+                   // Count food cells
+                   let foodCellCount = 0;
+                   const dims = gridDimensions.current || { width: 0, height: 0 };
+
+                   for (let y = 0; y < dims.height; y++) {
+                       for (let x = 0; x < dims.width; x++) {
+                           if (gridRef.current[y]?.[x]?.type === 'food') {
+                               foodCellCount++;
+                           }
+                       }
+                   }
+
+                   console.log(`🍔 FOOD STATUS: ${currentFoodPellets} pellets, ${foodCellCount} cells`);
+
+                   // Controlled food spawning, don't spawn if we have too much
+                   if (currentFoodPellets < 3) {
+                       console.log("Attempting food spawn...");
+                       const success = spawnFoodPellets();
+                       console.log(`Food spawn result: ${success ? 'SUCCESS' : 'FAILED'}`);
+                   } else {
+                       console.log("Skipping food spawn - already have sufficient food");
+                   }
+               } catch (foodErr) {
+                   console.error("Error during food spawning:", foodErr);
+               }
+           }
+
+           // Signal emission timing
+           const currentParams = simParamsRef.current || { signalFrequency: 1.0 };
+           const intervalMs = 1000 / (currentParams.signalFrequency || 1.0);
+           const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
+
+           // Main update steps with error handling
+           try {
+               // 1. Emit Signals when it's time
+               if (elapsedSinceLastEmit >= intervalMs) {
+                   emitSignal();
+                   lastSignalEmitTimeRef.current = currentTimeRef.current;
+               }
+           } catch (signalErr) {
+               console.error("Error emitting signals:", signalErr);
+           }
+
+           try {
+               // 2. Propagate Signals
+               const newlyReachedTips = propagateSignal(deltaTime) || new Set();
+
+               // 3. Growth at tips
+               triggerGrowthAtTips(newlyReachedTips);
+           } catch (growthErr) {
+               console.error("Error in propagation/growth:", growthErr);
+           }
+
+           try {
+               // 4. Handle fading tendrils
+               updateFadingTendrils();
+
+               // 5. Path integrity checks (less frequent)
+               if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
+                   verifyPathIntegrity();
+               }
+           } catch (updateErr) {
+               console.error("Error in tendril updates:", updateErr);
+           }
+
+           // Draw the simulation
+           try {
+               drawGridAndElements();
+           } catch (drawErr) {
+               console.error("Error drawing simulation:", drawErr);
+           }
+
+           // Continue the animation loop
+           animationFrameIdRef.current = window.requestAnimationFrame(render);
+
+       } catch (mainErr) {
+           console.error("Fatal error in render loop:", mainErr);
+           setError(`Render error: ${mainErr.message || "Unknown error"}`);
+           if (animationFrameIdRef.current) {
+               window.cancelAnimationFrame(animationFrameIdRef.current);
+               animationFrameIdRef.current = null;
+           }
        }
-       const canvas = canvasRef.current;
-       if (!canvas) return;
-
-       const prevTime = currentTimeRef.current || timestamp;
-       currentTimeRef.current = timestamp;
-       const deltaTime = timestamp - prevTime;
-
-       // Log deltaTime occasionally for performance check
-       if(frameCountRef.current % 60 === 0) { console.log(`DeltaTime: ${deltaTime.toFixed(2)}ms`); }
-
-       safeExecute(frameCountRef, () => { frameCountRef.current++; });
-
-       const currentSimParams = simParamsRef.current;
-       const intervalMilliseconds = 1000 / currentSimParams.signalFrequency;
-       const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
-
-       // --- Update Step ---
-       // 1. Emit Signals (Time-based)
-       if (elapsedSinceLastEmit >= intervalMilliseconds) {
-           safeExecute(null, emitSignal);
-           lastSignalEmitTimeRef.current = currentTimeRef.current;
-       }
-
-       // 2. Propagate Signals
-       const newlyReachedTips = safeExecute(null, propagateSignal, deltaTime) || new Set();
-
-       // 3. Trigger Growth & Check Collisions at Tips
-       safeExecute(null, triggerGrowthAtTips, newlyReachedTips);
-
-       // 4. Spawn Food Periodically/Randomly
-       // Increased probability: 2% chance per frame to attempt spawning
-       if (Math.random() < 0.02) {
-          safeExecute(null, spawnFoodPellets);
-       }
-
-       // 5. Update Fading/Reabsorbing Tendrils
-       safeExecute(null, updateFadingTendrils);
-
-       // 6. Path Integrity Check (Periodically)
-       if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
-           safeExecute(null, verifyPathIntegrity);
-       }
-
-       // 7. Source Regeneration Check
-        safeExecute(null, checkSourcesForRegeneration);
-
-       // --- Draw Step ---
-       safeExecute(null, drawGridAndElements);
-
-       // Continue loop
-       animationFrameIdRef.current = window.requestAnimationFrame(render);
-
-   }, [error, /* Add other state/prop dependencies if needed */ ]);
+   }, [error, emitSignal, propagateSignal, triggerGrowthAtTips, spawnFoodPellets,
+      updateFadingTendrils, verifyPathIntegrity, drawGridAndElements]);
 
 
   // --- Initialization and Cleanup ---
   const initializeSimulation = useCallback(() => {
       console.log("Initializing simulation...");
-      const canvas = canvasRef.current;
-      if (!canvas) {
-          console.error("Canvas element not found during initialization.");
-          setError("Canvas element not found.");
+      try {
+          const canvas = canvasRef.current;
+          if (!canvas) {
+              console.error("Canvas element not found during initialization.");
+              setError("Canvas element not found.");
+              return false;
+          }
+          const parentElement = canvas.parentElement;
+          if (!parentElement) {
+               console.error("Canvas parent element not found for sizing.");
+               setError("Canvas parent element not found.");
+               return false;
+           }
+          const { clientWidth, clientHeight } = parentElement;
+
+          // Set up canvas with correct dimensions
+          const dpr = window.devicePixelRatio || 1;
+          canvas.width = clientWidth * dpr;
+          canvas.height = clientHeight * dpr;
+          canvas.style.width = `${clientWidth}px`;
+          canvas.style.height = `${clientHeight}px`;
+
+          const context = canvas.getContext('2d');
+           if (!context) {
+               console.error("Failed to get 2D context during initialization.");
+               setError("Failed to get canvas context during init.");
+               return false;
+           }
+          context.scale(dpr, dpr);
+
+          const gridWidth = Math.floor(clientWidth / CELL_SIZE);
+          const gridHeight = Math.floor(clientHeight / CELL_SIZE);
+          gridDimensions.current = { width: gridWidth, height: gridHeight };
+
+          frameCountRef.current = 0;
+          lastSignalEmitTimeRef.current = 0;
+          currentTimeRef.current = 0;
+          tendrilsRef.current.clear();
+          sourcesRef.current = [];
+          foodPelletsRef.current = [];
+          connectionsRef.current = [];
+
+          console.log(`Initializing grid: ${gridWidth}×${gridHeight}`);
+
+          // Initialize grid with empty cells
+          initializeGrid(gridWidth, gridHeight);
+          // Place sources across the grid
+          placeSources(NUM_SOURCES, gridWidth, gridHeight);
+          // Create initial tendrils from sources
+          initializeTendrils();
+
+          setError(null); // Clear previous errors
+          console.log("Simulation initialized successfully.");
+          return true; // Indicate success
+      } catch (err) {
+          console.error("Initialization failed with error:", err);
+          setError(`Initialization error: ${err.message || "Unknown error"}`);
           return false;
       }
-      const parentElement = canvas.parentElement;
-      if (!parentElement) {
-           console.error("Canvas parent element not found for sizing.");
-           setError("Canvas parent element not found.");
-           return false;
-       }
-      const { clientWidth, clientHeight } = parentElement;
-
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = clientWidth * dpr;
-      canvas.height = clientHeight * dpr;
-      canvas.style.width = `${clientWidth}px`;
-      canvas.style.height = `${clientHeight}px`;
-
-      const context = canvas.getContext('2d');
-       if (!context) {
-           console.error("Failed to get 2D context during initialization.");
-           setError("Failed to get canvas context during init.");
-           return false;
-       }
-      context.scale(dpr, dpr);
-
-      const gridWidth = Math.floor(clientWidth / CELL_SIZE);
-      const gridHeight = Math.floor(clientHeight / CELL_SIZE);
-      gridDimensions.current = { width: gridWidth, height: gridHeight };
-
-      frameCountRef.current = 0;
-      lastSignalEmitTimeRef.current = 0;
-      currentTimeRef.current = 0;
-      tendrilsRef.current.clear();
-      sourcesRef.current = [];
-      foodPelletsRef.current = [];
-      connectionsRef.current = [];
-      setError(null); // Clear previous errors
-
-      // Perform initialization steps using safeExecute
-       if (!safeExecute(null, initializeGrid, gridWidth, gridHeight)) return false;
-       if (!safeExecute(null, placeSources, NUM_SOURCES, gridWidth, gridHeight)) return false;
-       if (!safeExecute(null, initializeTendrils)) return false;
-
-      console.log("Simulation initialized successfully.");
-      return true; // Indicate success
-  }, [initializeGrid, placeSources, initializeTendrils]); // Add dependencies
+  }, [initializeGrid, placeSources, initializeTendrils]);
 
   useEffect(() => {
       console.log("GOLSurvival component mounted.");
@@ -1245,6 +1742,84 @@ const GOLSurvival = () => {
      }
   }, [directionWeights]); // Depends on directionWeights state
 
+  // Food spawning function
+  const spawnFood = useCallback(() => {
+    // Don't exceed max food
+    if (foodCountRef.current >= simParamsRef.current.maxFood) {
+      return;
+    }
+
+    const { width, height } = gridDimensions.current;
+
+    // Random position within grid bounds
+    const x = getRandomInt(width);
+    const y = getRandomInt(height);
+
+    const cell = gridRef.current[y]?.[x];
+
+    if (cell && cell.type === 'empty') {
+      cell.type = 'food';
+      cell.creationFrame = frameCountRef.current;
+      cell.color = FOOD_COLOR;
+      foodCountRef.current++;
+
+      // Debug logging
+      console.log(`Food spawned at (${x}, ${y}), count: ${foodCountRef.current}`);
+    }
+  }, []);
+
+  // Food count reference
+  const foodCountRef = useRef(0);
+
+  // --- NEW: Function to handle signal propagation at branch points ---
+  const propagateSignalToBranches = useCallback((originTendril, branchCell, positionInPath) => {
+      if (!branchCell || !branchCell.isBranchPoint || !branchCell.tendrilId) {
+          console.warn("Invalid call to propagateSignalToBranches: Missing data.");
+          return;
+      }
+
+      const allTendrilIds = branchCell.tendrilId.split(',');
+      // console.log(`Propagating signal at branch point (${branchCell.x},${branchCell.y}). IDs: ${allTendrilIds.join(',')}`);
+
+      allTendrilIds.forEach(branchTendrilId => {
+          // Skip propagating back to the tendril the signal came from
+          if (branchTendrilId === originTendril.id) return;
+
+          const branchTendril = getTendrilById(branchTendrilId);
+          if (!branchTendril) {
+              console.warn(`Branch tendril ${branchTendrilId} not found during signal propagation.`);
+              return;
+          }
+
+          // Only propagate to active, idle tendrils
+          if (branchTendril.signalState !== 'idle' || (branchTendril.state !== 'growing' && branchTendril.state !== 'connected')) {
+              return;
+          }
+
+          // Find where this branch point is in the branch's path
+          // Use the actual branchCell coordinates for matching
+          const branchPointCoords = { x: branchCell.x, y: branchCell.y }; // Need to ensure branchCell has coords or get them
+          const branchPointIndexInBranch = branchTendril.path.findIndex(p => p.x === branchPointCoords.x && p.y === branchPointCoords.y);
+
+
+          if (branchPointIndexInBranch === -1) {
+               console.warn(`Branch point (${branchPointCoords.x}, ${branchPointCoords.y}) not found in path of branch ${branchTendril.id}. Cannot propagate signal.`);
+              // Maybe add approximate matching later if needed
+          } else {
+              // console.log(`  -> Propagating signal to branch ${branchTendril.id} starting at index ${branchPointIndexInBranch}`);
+              branchTendril.signalState = 'propagating';
+              // Start signal propagation from the *next* cell in the branch path
+              branchTendril.signalPosition = branchPointIndexInBranch + 1;
+              branchTendril.fractionalPos = branchPointIndexInBranch + 1;
+              // Ensure signal doesn't go out of bounds immediately
+              if(branchTendril.signalPosition >= branchTendril.path.length) {
+                 branchTendril.signalState = 'reached_tip'; // Mark as reached if branch is only 1 cell long past point
+                 branchTendril.signalPosition = branchTendril.path.length - 1;
+                 branchTendril.fractionalPos = branchTendril.path.length - 1;
+              }
+          }
+      });
+  }, [getTendrilById]); // Depends on getTendrilById
 
   // --- JSX Return ---
   return (
