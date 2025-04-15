@@ -33,6 +33,103 @@ const DIRECTIONS = [
   { dx: -1, dy: 1, index: 5, name: 'BL' }, { dx: 0, dy: 1, index: 6, name: 'B' }, { dx: 1, dy: 1, index: 7, name: 'BR' },
 ];
 
+// Add new relative direction definitions
+const RELATIVE_DIRECTIONS = {
+  // These are the names we'll show in the UI grid
+  FORWARD: 'F',
+  FORWARD_LEFT: 'FL',
+  FORWARD_RIGHT: 'FR',
+  LEFT: 'L',
+  RIGHT: 'R',
+  BACKWARD: 'B',
+  BACKWARD_LEFT: 'BL',
+  BACKWARD_RIGHT: 'BR',
+};
+
+// Map from relative direction to index in the grid (matches UI layout)
+const RELATIVE_TO_INDEX = {
+  [RELATIVE_DIRECTIONS.FORWARD_LEFT]: 0,
+  [RELATIVE_DIRECTIONS.FORWARD]: 1,
+  [RELATIVE_DIRECTIONS.FORWARD_RIGHT]: 2,
+  [RELATIVE_DIRECTIONS.LEFT]: 3,
+  // Center (4) is not used
+  [RELATIVE_DIRECTIONS.RIGHT]: 5,
+  [RELATIVE_DIRECTIONS.BACKWARD_LEFT]: 6,
+  [RELATIVE_DIRECTIONS.BACKWARD]: 7,
+  [RELATIVE_DIRECTIONS.BACKWARD_RIGHT]: 8,
+};
+
+// Function to determine the last direction a tendril moved
+const getLastMoveDirection = (tendril) => {
+  const pathLength = tendril.path.length;
+  if (pathLength < 2) return { dx: 0, dy: -1 }; // Default: up
+
+  const lastPoint = tendril.path[pathLength - 1];
+  const prevPoint = tendril.path[pathLength - 2];
+
+  return {
+    dx: Math.sign(lastPoint.x - prevPoint.x),
+    dy: Math.sign(lastPoint.y - prevPoint.y)
+  };
+};
+
+// Function to convert a relative direction to absolute coordinates based on last movement
+const relativeToAbsolute = (relDir, lastMoveDir) => {
+  // If we haven't moved yet, default direction is up
+  const { dx: lastDx, dy: lastDy } = lastMoveDir || { dx: 0, dy: -1 };
+
+  // Skip if we don't have a valid last direction
+  if (lastDx === 0 && lastDy === 0) return null;
+
+  // Based on the last move direction, calculate the appropriate absolute direction
+  switch(relDir) {
+    case RELATIVE_DIRECTIONS.FORWARD:
+      return { dx: lastDx, dy: lastDy };
+
+    case RELATIVE_DIRECTIONS.BACKWARD:
+      return { dx: -lastDx, dy: -lastDy };
+
+    case RELATIVE_DIRECTIONS.LEFT:
+      // To get "left" relative to current direction, rotate 90° counter-clockwise
+      return { dx: lastDy, dy: -lastDx };
+
+    case RELATIVE_DIRECTIONS.RIGHT:
+      // To get "right" relative to current direction, rotate 90° clockwise
+      return { dx: -lastDy, dy: lastDx };
+
+    case RELATIVE_DIRECTIONS.FORWARD_LEFT:
+      // Forward + Left
+      return {
+        dx: lastDx + lastDy,
+        dy: lastDy - lastDx
+      };
+
+    case RELATIVE_DIRECTIONS.FORWARD_RIGHT:
+      // Forward + Right
+      return {
+        dx: lastDx - lastDy,
+        dy: lastDy + lastDx
+      };
+
+    case RELATIVE_DIRECTIONS.BACKWARD_LEFT:
+      // Backward + Left
+      return {
+        dx: -lastDx + lastDy,
+        dy: -lastDy - lastDx
+      };
+
+    case RELATIVE_DIRECTIONS.BACKWARD_RIGHT:
+      // Backward + Right
+      return {
+        dx: -lastDx - lastDy,
+        dy: -lastDy + lastDx
+      };
+
+    default:
+      return null;
+  }
+};
+
 const getDirectionIndex = (dx, dy) => {
     const normDx = Math.sign(dx);
     const normDy = Math.sign(dy);
@@ -101,16 +198,17 @@ const GameOfLifeCanvas = () => {
 
   // --- State for Simulation Parameters ---
   const [pulseGenerationInterval, setPulseGenerationInterval] = useState(DEFAULT_PULSE_GENERATION_INTERVAL);
-  const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR); // NEW state for speed factor
+  const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // NEW Default Weights from screenshot, adjusted L/R to 0.2
-  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.2, 0.2, 0, 0, 0]);
+  // Default Weights (now for relative directions)
+  // Order: FL, F, FR, L, Center(unused), R, BL, B, BR
+  const [directionWeights, setDirectionWeights] = useState([1, 1.5, 1, 0.2, 0, 0.2, 0, 0, 0]);
 
   // Use refs to hold the current state values
   const simParamsRef = useRef({
     pulseGenerationInterval,
-    pulseSpeedFactor, // Use speed factor in ref
+    pulseSpeedFactor,
     branchChance,
     fadeSpeed,
     directionWeights,
@@ -120,7 +218,7 @@ const GameOfLifeCanvas = () => {
   useEffect(() => {
     simParamsRef.current = {
       pulseGenerationInterval,
-      pulseSpeedFactor, // Update ref
+      pulseSpeedFactor,
       branchChance,
       fadeSpeed,
       directionWeights,
@@ -382,8 +480,35 @@ const GameOfLifeCanvas = () => {
              const dy = neighbor.y - currentHead.y;
              const dirIndex = getDirectionIndex(dx, dy);
 
-             // Get the base weight from our direction weights
-             let weight = (dirIndex !== -1 && currentWeights[dirIndex] !== undefined) ? currentWeights[dirIndex] : 0;
+             // Get last movement direction for this tendril
+             const lastMoveDir = getLastMoveDirection(tendril);
+
+             // For each neighbor, we want to know what relative direction it is
+             // (Forward, Left, Right, etc.) based on the tendril's last movement
+             let weight = 0;
+
+             // Get the base weight from our direction weights array
+             // Calculate the weight based on relative direction rather than absolute coordinates
+
+             // Loop through all possible relative directions
+             Object.values(RELATIVE_DIRECTIONS).forEach((relDir, index) => {
+                 // Convert this relative direction to absolute coordinates
+                 const absDir = relativeToAbsolute(relDir, lastMoveDir);
+                 if (!absDir) return;
+
+                 const absDx = Math.sign(absDir.dx);
+                 const absDy = Math.sign(absDir.dy);
+
+                 // If this absolute direction matches our current neighbor
+                 if (Math.sign(dx) === absDx && Math.sign(dy) === absDy) {
+                     // Use the weight from the direction grid
+                     // relDir maps to an index in the directionWeights array
+                     const weightIndex = RELATIVE_TO_INDEX[relDir];
+                     if (weightIndex !== undefined && currentWeights[weightIndex] !== undefined) {
+                         weight = currentWeights[weightIndex];
+                     }
+                 }
+             });
 
              // GROWTH ENHANCEMENT: For branches, enhance the chance to grow away from the parent path
              // This helps branches look more visually distinct
@@ -631,7 +756,9 @@ const GameOfLifeCanvas = () => {
                         color: '#FFFFFF', // Use a different color to highlight the branch point
                         tendrilId: `${tendril.id},${branchId}`, // Mark as belonging to both tendrils
                         sourceId: tendril.sourceId,
-                        isBranchPoint: true
+                        isBranchPoint: true,
+                        branchTime: frameCountRef.current, // When the branch was created
+                        branchVisibleDuration: 30 // Show branch point for this many frames before fading
                     });
 
                     // CRITICAL FIX: Immediately add a pulse for the new branch to start its growth
@@ -822,7 +949,36 @@ const GameOfLifeCanvas = () => {
 
                 // Handle branch points specially - mark them in a different color to make branches visible
                 if (cell.isBranchPoint) {
-                    context.fillStyle = '#FFFFFF'; // White for branch points
+                    // Calculate how long the branch point has existed
+                    const branchAge = frameCountRef.current - (cell.branchTime || 0);
+                    const branchVisibleDuration = cell.branchVisibleDuration || 30;
+
+                    // If the branch point is old enough, start transitioning its color to normal
+                    if (branchAge > branchVisibleDuration) {
+                        // Transition from white to tendril color over time
+                        const transitionProgress = Math.min(1, (branchAge - branchVisibleDuration) / 20);
+
+                        // Mix colors from white to tendril blue based on transition progress
+                        const r = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(1, 3), 16) * transitionProgress);
+                        const g = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(3, 5), 16) * transitionProgress);
+                        const b = Math.round(255 * (1 - transitionProgress) + parseInt(TENDRIL_COLOR.slice(5, 7), 16) * transitionProgress);
+
+                        // Set color to this interpolated value
+                        context.fillStyle = `rgb(${r}, ${g}, ${b})`;
+
+                        // If fully transitioned, remove branch point flag to simplify future rendering
+                        if (transitionProgress >= 0.99) {
+                            gridRef.current[y][x] = {
+                                ...cell,
+                                isBranchPoint: false,
+                                color: TENDRIL_COLOR
+                            };
+                        }
+                    } else {
+                        // Branch point is still in highlight phase
+                        context.fillStyle = '#FFFFFF'; // White for branch points
+                    }
+
                     context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
                     continue; // Skip normal processing for branch points
                 }
@@ -976,7 +1132,7 @@ const GameOfLifeCanvas = () => {
     };
   }, []); // Empty dependency array ensures this runs only once on mount
 
-  // *** RE-ADD: Handler for weight changes ***
+  // Updated handler for relative direction weight changes
   const handleWeightChange = (index, value) => {
     const newWeights = [...directionWeights];
     const numValue = Math.max(0, Number(value) || 0);
@@ -997,25 +1153,25 @@ const GameOfLifeCanvas = () => {
        <div className="absolute bottom-4 left-4 flex space-x-6">
            {/* Parameter Sliders */}
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48">
-                 {/* Pulse Interval Slider (remains the same) */}
+                 {/* Pulse Interval Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseGen" className="flex-1">Pulse Interval:</label>
                    <input type="range" id="pulseGen" min="5" max="120" step="1" value={pulseGenerationInterval} onChange={(e) => setPulseGenerationInterval(Number(e.target.value))} className="w-20 mx-2" />
                    <span className="w-6 text-right">{pulseGenerationInterval}</span>
                  </div>
-                 {/* --- Modified Pulse Speed Slider --- */}
+                 {/* Pulse Speed Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseSpeedFactor" className="flex-1">Pulse Speed:</label>
                    <input
                       type="range" id="pulseSpeedFactor"
-                      min="1" max={MAX_PULSE_SPEED_FACTOR} step="1" // Use new range
+                      min="1" max={MAX_PULSE_SPEED_FACTOR} step="1"
                       value={pulseSpeedFactor}
-                      onChange={(e) => setPulseSpeedFactor(Number(e.target.value))} // Update speed factor state
+                      onChange={(e) => setPulseSpeedFactor(Number(e.target.value))}
                       className="w-20 mx-2"
                    />
-                   <span className="w-6 text-right">{pulseSpeedFactor}x</span> {/* Display factor */}
+                   <span className="w-6 text-right">{pulseSpeedFactor}x</span>
                  </div>
-                 {/* Branch Chance Slider (remains the same) */}
+                 {/* Branch Chance Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="branch" className="flex-1">Branch Chance:</label>
                    <input
@@ -1027,14 +1183,14 @@ const GameOfLifeCanvas = () => {
                      value={branchChance}
                      onChange={(e) => {
                        const newValue = Number(e.target.value);
-                       console.log("Slider: Branch chance changed to:", newValue); // Add log here
+                       console.log("Slider: Branch chance changed to:", newValue);
                        setBranchChance(newValue);
                      }}
                      className="w-20 mx-2"
                    />
                    <span className="w-6 text-right">{(branchChance * 100).toFixed(0)}%</span>
                  </div>
-                 {/* Fade Speed Slider (remains the same) */}
+                 {/* Fade Speed Slider */}
                  <div className="flex items-center justify-between">
                    <label htmlFor="fade" className="flex-1">Fade Speed:</label>
                    <input type="range" id="fade" min="0.001" max="0.1" step="0.001" value={fadeSpeed} onChange={(e) => setFadeSpeed(Number(e.target.value))} className="w-20 mx-2" />
@@ -1042,27 +1198,101 @@ const GameOfLifeCanvas = () => {
                  </div>
            </div>
 
-           {/* *** RE-ADD: Directional Weights Grid *** */}
+           {/* Directional Weights Grid - Updated with Relative Direction Labels */}
             <div className="bg-gray-800 bg-opacity-80 p-3 rounded text-white text-xs">
                 <label className="block text-center mb-2 font-semibold">Growth Bias</label>
                 <div className="grid grid-cols-3 gap-1 w-32">
-                   {[0, 1, 2, 3, -1, 4, 5, 6, 7].map((dirIndex) => (
-                     <input
-                       key={dirIndex === -1 ? 'center' : DIRECTIONS[dirIndex].name}
-                       type="number"
-                       min="0"
-                       step="0.1"
-                       value={dirIndex === -1 ? '' : directionWeights[dirIndex]}
-                       onChange={dirIndex === -1 ? undefined : (e) => handleWeightChange(dirIndex, e.target.value)}
-                       disabled={dirIndex === -1}
-                       title={dirIndex === -1 ? 'Center' : DIRECTIONS[dirIndex].name}
-                       className={`
-                         w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm
-                         border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                         ${dirIndex === -1 ? 'bg-gray-600 cursor-not-allowed' : 'hover:bg-gray-600'}
-                       `}
-                     />
-                   ))}
+                   {/* Row 1: Forward-Left, Forward, Forward-Right */}
+                   <input
+                     key="FL"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[0]}
+                     onChange={(e) => handleWeightChange(0, e.target.value)}
+                     title="Forward-Left"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+                   <input
+                     key="F"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[1]}
+                     onChange={(e) => handleWeightChange(1, e.target.value)}
+                     title="Forward"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+                   <input
+                     key="FR"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[2]}
+                     onChange={(e) => handleWeightChange(2, e.target.value)}
+                     title="Forward-Right"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+
+                   {/* Row 2: Left, Center (empty), Right */}
+                   <input
+                     key="L"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[3]}
+                     onChange={(e) => handleWeightChange(3, e.target.value)}
+                     title="Left"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+                   <div
+                     key="center"
+                     className="w-full h-8 flex items-center justify-center rounded bg-gray-600 text-gray-400 text-xs border border-gray-500"
+                   >
+                     •
+                   </div>
+                   <input
+                     key="R"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[5]}
+                     onChange={(e) => handleWeightChange(5, e.target.value)}
+                     title="Right"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+
+                   {/* Row 3: Backward-Left, Backward, Backward-Right */}
+                   <input
+                     key="BL"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[6]}
+                     onChange={(e) => handleWeightChange(6, e.target.value)}
+                     title="Backward-Left"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+                   <input
+                     key="B"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[7]}
+                     onChange={(e) => handleWeightChange(7, e.target.value)}
+                     title="Backward"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
+                   <input
+                     key="BR"
+                     type="number"
+                     min="0"
+                     step="0.1"
+                     value={directionWeights[8]}
+                     onChange={(e) => handleWeightChange(8, e.target.value)}
+                     title="Backward-Right"
+                     className="w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600"
+                   />
                 </div>
             </div>
        </div>
