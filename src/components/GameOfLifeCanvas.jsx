@@ -381,7 +381,41 @@ const GameOfLifeCanvas = () => {
              const dx = neighbor.x - currentHead.x;
              const dy = neighbor.y - currentHead.y;
              const dirIndex = getDirectionIndex(dx, dy);
+
+             // Get the base weight from our direction weights
              let weight = (dirIndex !== -1 && currentWeights[dirIndex] !== undefined) ? currentWeights[dirIndex] : 0;
+
+             // GROWTH ENHANCEMENT: For branches, enhance the chance to grow away from the parent path
+             // This helps branches look more visually distinct
+             if (tendril.isBranch && tendril.path.length < 5) {
+                 // If we're just starting to grow a branch, adjust weights to encourage divergence
+                 // from the parent tendril
+
+                 // Let's find the parent tendril first
+                 const parentId = tendril.parentId;
+                 const parentTendril = parentId ? tendrilsRef.current.find(t => t.id === parentId) : null;
+
+                 if (parentTendril) {
+                     // Get the last few segments of the parent to determine its recent direction
+                     const parentRecent = parentTendril.path.slice(-3);
+                     if (parentRecent.length >= 2) {
+                         // Calculate parent's recent direction
+                         const parentEndPoint = parentRecent[parentRecent.length - 1];
+                         const parentPrevPoint = parentRecent[parentRecent.length - 2];
+
+                         const parentDx = parentEndPoint.x - parentPrevPoint.x;
+                         const parentDy = parentEndPoint.y - parentPrevPoint.y;
+
+                         // If the neighbor is perpendicular to parent direction, boost its weight
+                         // This creates branches that tend to grow out to the sides
+                         if ((parentDx !== 0 && dy !== 0 && dx === 0) ||
+                             (parentDy !== 0 && dx !== 0 && dy === 0)) {
+                             weight *= 3.0; // Triple the weight for perpendicular directions
+                             console.log(`Branch ${tendril.id}: Boosting perpendicular direction ${dx},${dy} to weight ${weight}`);
+                         }
+                     }
+                 }
+             }
 
              // --- Adjacency Penalty Check ---
              if (weight > 0) { // Only check if it's a potential candidate
@@ -390,9 +424,35 @@ const GameOfLifeCanvas = () => {
                     [ 0, -1],          [ 0, 1],
                     [ 1, -1], [ 1, 0], [ 1, 1]
                 ];
+
+                // CRITICAL FIX: For branches, we need to IGNORE adjacency to cells in the shared path
+                // Get the first few cells of the tendril's path to exempt from adjacency check
+                // This prevents branches from being blocked by their parent tendril
+                const ignoredCells = new Set();
+
+                // If this tendril ID looks like a branch (has more than 2 segments)
+                const isBranch = tendril.id.split('-').length > 2;
+
+                if (isBranch) {
+                    // For branches, get the first 10 cells of the path
+                    // These are likely shared with the parent and shouldn't block growth
+                    const sharedPathCells = tendril.path.slice(0, 10);
+                    sharedPathCells.forEach(cell => {
+                        ignoredCells.add(`${cell.x},${cell.y}`);
+                    });
+                    console.log(`Branch ${tendril.id} has ${ignoredCells.size} ignored adjacency cells`);
+                }
+
+                let hasBlockingAdjacency = false;
+
                 for (const [adjDx, adjDy] of adjacentCellsToCheck) {
                     const checkX = neighbor.x + adjDx;
                     const checkY = neighbor.y + adjDy;
+
+                    // Skip this check if the cell is in our ignore list (for branches)
+                    if (ignoredCells.has(`${checkX},${checkY}`)) {
+                        continue;
+                    }
 
                     // Is the adjacent cell part of the current tendril's path?
                     const isAdjacentToSelf = tendril.path.some(p => p.x === checkX && p.y === checkY);
@@ -403,11 +463,14 @@ const GameOfLifeCanvas = () => {
 
                     if (isAdjacentToSelf && !isAdjacentToHead && !isAdjacentToPrev) {
                         // This neighbor cell is touching the tendril's body somewhere else!
-                        // Force weight to 0 to prevent moving here.
-                        // console.log(`Penalty applied to ${neighbor.x},${neighbor.y} due to adjacency with ${checkX},${checkY}`);
-                        weight = 0;
-                        break; // *** CORRECTED: Use break to exit inner loop only ***
+                        hasBlockingAdjacency = true;
+                        break;
                     }
+                }
+
+                if (hasBlockingAdjacency) {
+                    // Force weight to 0 to prevent moving here due to adjacency
+                    weight = 0;
                 }
             }
              // --- End Adjacency Penalty Check ---
@@ -517,19 +580,34 @@ const GameOfLifeCanvas = () => {
                 const branchTarget = weightedRandomSelect(potentialBranchTargets);
                 if (branchTarget) { // Check if selection succeeded
                     const branchId = getUniqueTendrilId(tendril.sourceId);
-                    // *** FIX: Correct branch path initialization ***
-                    // The branch path should include the current head, then the branch target.
-                    const currentPath = tendril.path; // Get the current path
+
+                    // SIMPLIFY BRANCH CREATION: Instead of copying the entire parent path,
+                    // just use the branch point (current head) as the starting point
+                    // This makes branches cleaner and avoids overlap with parent path
+                    const branchStartPoint = tendril.path[tendril.path.length - 1];
+
                     const branchTendril = {
                         id: branchId,
                         sourceId: tendril.sourceId,
-                        path: [...currentPath, branchTarget], // Start from full current path, add branch target
+                        // Start with just the branch point and the target
+                        path: [branchStartPoint, branchTarget],
                         state: 'growing',
                         pulsePosition: 0,
                         opacity: 1,
+                        // Add a flag to identify this as a branch - helps with debugging
+                        isBranch: true,
+                        parentId: tendril.id
                     };
-                    // *** ADD LOG: Log the created branch object ***
-                    console.log(`--> Creating Branch Object:`, JSON.stringify(branchTendril));
+
+                    console.log(`--> Creating Branch Object:`, JSON.stringify({
+                        id: branchTendril.id,
+                        parentId: branchTendril.parentId,
+                        sourceId: branchTendril.sourceId,
+                        pathLength: branchTendril.path.length,
+                        startPoint: branchStartPoint,
+                        targetPoint: branchTarget
+                    }));
+
                     newBranches.push(branchTendril);
 
                     // CRITICAL FIX: Mark the branch's path on the grid
@@ -544,11 +622,11 @@ const GameOfLifeCanvas = () => {
                     // Since a branch visually appears at a single divergence point,
                     // We need to mark that one cell differently to make it visually distinct
                     // Find the point where branching occurs - it's the cell before branchTarget
-                    const branchPoint = tendril.path[tendril.path.length - 1]; // The current head of the parent
+                    const divergePoint = tendril.path[tendril.path.length - 1]; // The current head of the parent
 
                     // Mark this on the grid as a special cell that belongs to both tendrils
                     // This will help create a visual branch
-                    gridUpdates.set(`${branchPoint.y}-${branchPoint.x}`, {
+                    gridUpdates.set(`${divergePoint.y}-${divergePoint.x}`, {
                         type: 'tendril',
                         color: '#FFFFFF', // Use a different color to highlight the branch point
                         tendrilId: `${tendril.id},${branchId}`, // Mark as belonging to both tendrils
