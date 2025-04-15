@@ -10,7 +10,20 @@
 - **[Date Placeholder]**: Hero Section Refinement (v1.3): Replaced title font with EB Garamond, fine-tuned font weights/styles. Adjusted gradient colors, implemented layered background with animated SVG grain filter and blur overlay. Polished layout spacing, subtitle alignment, and divider style.
 - Updated `src/data/profileData.js` with the full, finalized leadership profile text content.
 - **[Date Placeholder]**: GitHub Pages Deployment (v1.4): Configured project for GitHub Pages, installed `gh-pages` dependency, updated `package.json` and `vite.config.js`, added remote origin, resolved deployment issues, and successfully deployed the live site to `https://vnicolescu.github.io/`.
-- **Date:** [Current Date]
-  - **Feature:** Attempted major refactor of `GameOfLifeCanvas.jsx` to implement a signal-based growth model (replacing pulse model).
-  - **Status:** Refactor completed. Initialization errors resolved. Signal propagation and growth triggering now functional.
-  - **Next:** Fine-tune simulation parameters (signal interval, branch chance, fade speed, growth bias) for desired visual aesthetics.
+- **Date:** April 15, 2023
+  - **Feature:** Enhanced Game of Life Simulation with Age-Based Conductivity
+  - **Achievements:**
+    - **Signal-Based Growth Model:** Implemented a complete refactor from continuous growth to a discrete signal-pulse system where growth only occurs when signals reach tendril tips.
+    - **Age Visualization System:** Created a color gradient from orange (new growth) to blue (mature paths) based on cell age.
+    - **Conductivity Mechanics:** Older pathways conduct signals faster than newer segments (0.3x-3.0x multiplier), creating a "beaten path" effect.
+    - **Parameter Controls:** Added UI sliders for signal frequency (0.2-4Hz), pulse speed, branch chance, and fade speed.
+    - **Visual Enhancements:** Improved signal visualization with bright white pulses and trailing effects.
+    - **Persistent Settings:** Implemented localStorage saving of parameter settings between sessions.
+  - **Technical Details:**
+    - Fixed signal propagation across branch points to ensure connected networks
+    - Implemented age tracking for all cells with conductivity multipliers
+    - Enhanced branch verification to improve branch survival rates
+    - Added integrity checking to ensure all tendrils maintain valid paths to sources
+    - Optimized visibility and performance for smooth animation
+  - **Status:** Fully functional with multiple interacting systems creating emergent behaviors similar to natural growth patterns.
+  - **Next:** Consider additional environmental influences, obstacles, and connection behaviors.
