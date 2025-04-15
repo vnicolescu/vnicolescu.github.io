@@ -12,6 +12,8 @@ const MAX_PULSE_SPEED_FACTOR = 50; // Allow much faster speeds
 const DEFAULT_BRANCH_CHANCE = 0.15;
 const DEFAULT_FADE_SPEED = 0.02;
 const FLASH_DURATION_FRAMES = 15;
+const MAX_BRANCH_ATTEMPTS = 20; // Maximum attempts to find a valid branch direction
+const SOURCE_REGENERATION_DELAY = 60; // Frames to wait before regenerating from a source
 
 // Colors (using your palette)
 const SOURCE_COLOR = '#6366F1'; // Indigo Flame from palette
@@ -202,9 +204,12 @@ const GameOfLifeCanvas = () => {
   const [pulseSpeedFactor, setPulseSpeedFactor] = useState(DEFAULT_PULSE_SPEED_FACTOR);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [fadeSpeed, setFadeSpeed] = useState(DEFAULT_FADE_SPEED);
-  // Default Weights (now for relative directions)
+  // Default Weights (now for relative directions) - Make forward bias stronger for branches to live longer
   // Order: FL, F, FR, L, Center(unused), R, BL, B, BR
-  const [directionWeights, setDirectionWeights] = useState([0.7, 2.0, 0.7, 0.4, 0, 0.4, 0, 0, 0]);
+  const [directionWeights, setDirectionWeights] = useState([0.8, 2.5, 0.8, 0.3, 0, 0.3, 0, 0, 0]);
+
+  // Track source states for regeneration
+  const sourceStatesRef = useRef({});
 
   // Use refs to hold the current state values
   const simParamsRef = useRef({
@@ -246,13 +251,17 @@ const GameOfLifeCanvas = () => {
   };
 
   // Helper to get neighbors (Check for existing connections)
-  const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId) => {
-    const neighbors = { empty: [], collision: [], selfCollision: [] }; // Add selfCollision key
+  const getNeighbors = (x, y, gridWidth, gridHeight, currentSourceId, isBranch = false) => {
+    const neighbors = { empty: [], collision: [], selfCollision: [] };
     const directions = [
         [-1, -1], [-1, 0], [-1, 1],
         [ 0, -1],          [ 0, 1],
         [ 1, -1], [ 1, 0], [ 1, 1]
     ];
+
+    // For branches, we'll be more permissive with adjacency
+    const adjacencyCheckRadius = isBranch ? 1 : 2; // Smaller radius for branches means more freedom
+
     for (const [dx, dy] of directions) {
         const nx = x + dx;
         const ny = y + dy;
@@ -282,7 +291,7 @@ const GameOfLifeCanvas = () => {
         }
     }
     return neighbors;
-};
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -608,16 +617,48 @@ const GameOfLifeCanvas = () => {
 
     // Check if sources need to regenerate new tendrils
     const checkSourcesForRegeneration = () => {
+      // Initialize source states if needed
       sourcesRef.current.forEach(source => {
-        // Count active tendrils for this source
-        const activeTendrilCount = tendrilsRef.current.filter(t =>
-          t.sourceId === source.id && (t.state === 'growing' || t.state === 'connected')
-        ).length;
+        if (!sourceStatesRef.current[source.id]) {
+          sourceStatesRef.current[source.id] = {
+            lastActiveTendrilTime: frameCountRef.current,
+            regenerationTriggered: false,
+            regenerationAttempts: 0,
+            lastRegenerationTime: 0
+          };
+        }
+      });
 
-        // If no active tendrils, create a new one from the source
-        if (activeTendrilCount === 0) {
-          console.log(`Source ${source.id} has no active tendrils, regenerating`);
-          regenerateTendrilFromSource(source);
+      sourcesRef.current.forEach(source => {
+        const sourceState = sourceStatesRef.current[source.id];
+        if (!sourceState) return;
+
+        // Count active tendrils for this source
+        const activeTendrils = tendrilsRef.current.filter(t =>
+          t.sourceId === source.id && (t.state === 'growing' || t.state === 'connected')
+        );
+
+        const activeTendrilCount = activeTendrils.length;
+
+        if (activeTendrilCount > 0) {
+          // Reset the regeneration trigger if we have active tendrils
+          sourceState.lastActiveTendrilTime = frameCountRef.current;
+          sourceState.regenerationTriggered = false;
+        } else {
+          // No active tendrils - check if we need to trigger regeneration
+          const timeSinceLastActive = frameCountRef.current - sourceState.lastActiveTendrilTime;
+          const timeSinceLastRegeneration = frameCountRef.current - sourceState.lastRegenerationTime;
+
+          // Only regenerate if enough time has passed since last active tendril AND since last regeneration
+          if (timeSinceLastActive > SOURCE_REGENERATION_DELAY &&
+              timeSinceLastRegeneration > SOURCE_REGENERATION_DELAY &&
+              !sourceState.regenerationTriggered) {
+            console.log(`Source ${source.id} has no active tendrils for ${timeSinceLastActive} frames, regenerating`);
+            regenerateTendrilFromSource(source);
+            sourceState.regenerationTriggered = true;
+            sourceState.lastRegenerationTime = frameCountRef.current;
+            sourceState.regenerationAttempts += 1;
+          }
         }
       });
     };
@@ -653,6 +694,10 @@ const GameOfLifeCanvas = () => {
         // Only update tendrilId if needed - source might already have this property
         if (!gridRef.current[y][x].tendrilId) {
           gridRef.current[y][x].tendrilId = tendrilId;
+        } else {
+          // If the cell already has a tendril ID, add this one to it
+          const existingId = gridRef.current[y][x].tendrilId;
+          gridRef.current[y][x].tendrilId = `${existingId},${tendrilId}`;
         }
       }
 
@@ -666,7 +711,136 @@ const GameOfLifeCanvas = () => {
       console.log(`Created regenerated tendril ${tendrilId} for source ${sourceId}`);
     };
 
-    // --- RENAMED/REFACTORED: Growth logic for a single tendril ***
+    // --- Branching Logic (refactored) ---
+    const attemptBranching = (tendril, currentHead, weightedNeighbors, nextCell, gridUpdates) => {
+      // Check if branching is geometrically possible and probabilistically triggered
+      const currentBranchChance = simParamsRef.current.branchChance;
+      const randomValue = Math.random();
+      const meetsChance = randomValue < currentBranchChance;
+      const pathLengthOk = tendril.path.length > 5;
+      const neighborsOk = weightedNeighbors.length > 1; // Need at least one more besides nextCell
+      const stateOk = tendril.state === 'growing';
+
+      // Only attempt branching if all conditions are met
+      if (!(stateOk && pathLengthOk && neighborsOk && meetsChance)) {
+        return [];
+      }
+
+      console.log(`--> ATTEMPTING branch for tendril ${tendril.id}`);
+
+      // Identify potential branch directions (excluding the main growth direction)
+      let potentialBranchTargets = weightedNeighbors.filter(n =>
+        !(n.item.x === nextCell.x && n.item.y === nextCell.y)
+      );
+
+      // Sort by weight to prioritize better directions
+      potentialBranchTargets.sort((a, b) => b.weight - a.weight);
+
+      // Early exit if no branch targets
+      if (potentialBranchTargets.length === 0) {
+        console.log(`No valid branch targets for tendril ${tendril.id}`);
+        return [];
+      }
+
+      // Try to find a good branch target that won't create a dead end
+      // We'll try several candidates in order of weight
+      const newBranches = [];
+      let attempts = 0;
+      let branchCreated = false;
+
+      while (!branchCreated && attempts < Math.min(MAX_BRANCH_ATTEMPTS, potentialBranchTargets.length)) {
+        const targetOption = potentialBranchTargets[attempts];
+        const branchTarget = targetOption.item;
+        attempts++;
+
+        // Check if this branch target has enough empty space around it
+        // to be a viable branch (to avoid creating dead ends)
+        const emptySpaceCount = countEmptySpaceAround(branchTarget.x, branchTarget.y, gridWidth, gridHeight);
+
+        if (emptySpaceCount < 3) {
+          console.log(`Branch target (${branchTarget.x},${branchTarget.y}) has insufficient space (${emptySpaceCount}), trying another`);
+          continue;
+        }
+
+        // Good target found - create the branch
+        const branchId = getUniqueTendrilId(tendril.sourceId);
+
+        const branchTendril = {
+          id: branchId,
+          sourceId: tendril.sourceId,
+          path: [currentHead, branchTarget],
+          state: 'growing',
+          pulsePosition: 0,
+          opacity: 1,
+          isBranch: true,
+          parentId: tendril.id,
+          creation: frameCountRef.current
+        };
+
+        newBranches.push(branchTendril);
+
+        // Mark the branched cell on the grid
+        gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, {
+          type: 'tendril',
+          color: TENDRIL_COLOR,
+          tendrilId: branchId,
+          sourceId: tendril.sourceId
+        });
+
+        // Mark the branch point as a special cell
+        gridUpdates.set(`${currentHead.y}-${currentHead.x}`, {
+          type: 'tendril',
+          color: '#FFFFFF', // Use a different color to highlight the branch point
+          tendrilId: `${tendril.id},${branchId}`, // Mark as belonging to both tendrils
+          sourceId: tendril.sourceId,
+          isBranchPoint: true,
+          branchTime: frameCountRef.current, // When the branch was created
+          branchVisibleDuration: 30 // Show branch point for this many frames before fading
+        });
+
+        // Add initial pulse to start the branch growing
+        pulsesRef.current.push({
+          id: getUniquePulseId(),
+          tendrilId: branchId,
+          position: 0,
+        });
+
+        console.log(`SUCCESS: Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`);
+        branchCreated = true;
+      }
+
+      if (!branchCreated) {
+        console.log(`Failed to create branch after ${attempts} attempts for tendril ${tendril.id}`);
+      }
+
+      return newBranches;
+    };
+
+    // Helper to count empty space around a position
+    const countEmptySpaceAround = (x, y, gridWidth, gridHeight) => {
+      let emptyCount = 0;
+      const directions = [
+          [-1, -1], [-1, 0], [-1, 1],
+          [ 0, -1],          [ 0, 1],
+          [ 1, -1], [ 1, 0], [ 1, 1]
+      ];
+
+      for (const [dx, dy] of directions) {
+        const nx = x + dx;
+        const ny = y + dy;
+
+        if (!isWithinBounds(nx, ny, gridWidth, gridHeight)) continue;
+
+        const cell = gridRef.current[ny]?.[nx];
+        if (cell && cell.type === 'empty') {
+          emptyCount++;
+        }
+      }
+
+      return emptyCount;
+    };
+
+    // *** RENAMED/REFACTORED: Growth logic for a single tendril ***
     const tryGrowTendril = (tendril) => {
         const gridUpdates = new Map();
         const newBranches = [];
@@ -691,7 +865,9 @@ const GameOfLifeCanvas = () => {
             return;
         }
 
-        const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight, tendril.sourceId);
+        // Pass isBranch flag to getNeighbors to use different adjacency rules for branches
+        const neighbors = getNeighbors(currentHead.x, currentHead.y, gridWidth, gridHeight,
+                                     tendril.sourceId, tendril.isBranch);
 
         // Filter out the immediate previous cell
         const validEmptyNeighbors = neighbors.empty.filter(n =>
@@ -890,113 +1066,10 @@ const GameOfLifeCanvas = () => {
             return;
         }
 
-        // --- Branching Logic (Uses Weighted Selection) ---
-        const currentBranchChance = simParamsRef.current.branchChance;
-        const randomValue = Math.random();
-        const meetsChance = randomValue < currentBranchChance;
-        const pathLengthOk = tendril.path.length > 5;
-        const neighborsOk = nonSelfNeighbors.length > 1;
-        const stateOk = tendril.state === 'growing';
-
-        // Log the conditions before the check
-        if (stateOk) { // Only log for tendrils that *could* branch
-            console.log(`Branch Check (Tendril ${tendril.id}):
-                State: ${tendril.state} (OK: ${stateOk})
-                Path Length: ${tendril.path.length} (OK: ${pathLengthOk})
-                Non-Self Neighbors: ${nonSelfNeighbors.length} (OK: ${neighborsOk})
-                Branch Chance: ${currentBranchChance}
-                Random Value: ${randomValue.toFixed(3)}
-                Meets Chance: ${meetsChance}
-                Should Branch: ${stateOk && pathLengthOk && neighborsOk && meetsChance}`
-            );
-        }
-
-        // Check if branching is geometrically possible and probabilistically triggered
-        const shouldBranch = stateOk && pathLengthOk && neighborsOk && meetsChance;
-
-        if (shouldBranch) {
-            console.log(`--> ATTEMPTING branch for tendril ${tendril.id}`); // More visible log
-            // Find potential branch targets among weighted neighbors (excluding the main growth target 'nextCell')
-            const potentialBranchTargets = weightedNeighbors.filter(n => n.item.x !== nextCell.x || n.item.y !== nextCell.y);
-
-            // console.log(`Found ${potentialBranchTargets.length} potential branch targets`); // Keep this commented for now
-
-            if (potentialBranchTargets.length > 0) {
-                // *** CORRECTED: Use weighted selection for branch target ***
-                const branchTarget = weightedRandomSelect(potentialBranchTargets);
-                if (branchTarget) { // Check if selection succeeded
-                    const branchId = getUniqueTendrilId(tendril.sourceId);
-
-                    // SIMPLIFY BRANCH CREATION: Instead of copying the entire parent path,
-                    // just use the branch point (current head) as the starting point
-                    // This makes branches cleaner and avoids overlap with parent path
-                    const branchStartPoint = tendril.path[tendril.path.length - 1];
-
-                    const branchTendril = {
-                        id: branchId,
-                        sourceId: tendril.sourceId,
-                        // Start with just the branch point and the target
-                        path: [branchStartPoint, branchTarget],
-                        state: 'growing',
-                        pulsePosition: 0,
-                        opacity: 1,
-                        // Add a flag to identify this as a branch - helps with debugging
-                        isBranch: true,
-                        parentId: tendril.id
-                    };
-
-                    console.log(`--> Creating Branch Object:`, JSON.stringify({
-                        id: branchTendril.id,
-                        parentId: branchTendril.parentId,
-                        sourceId: branchTendril.sourceId,
-                        pathLength: branchTendril.path.length,
-                        startPoint: branchStartPoint,
-                        targetPoint: branchTarget
-                    }));
-
-                    newBranches.push(branchTendril);
-
-                    // CRITICAL FIX: Mark the branch's path on the grid
-                    // First, add the branch target cell
-                    gridUpdates.set(`${branchTarget.y}-${branchTarget.x}`, {
-                        type: 'tendril',
-                        color: TENDRIL_COLOR,
-                        tendrilId: branchId,
-                        sourceId: tendril.sourceId
-                    });
-
-                    // Since a branch visually appears at a single divergence point,
-                    // We need to mark that one cell differently to make it visually distinct
-                    // Find the point where branching occurs - it's the cell before branchTarget
-                    const divergePoint = tendril.path[tendril.path.length - 1]; // The current head of the parent
-
-                    // Mark this on the grid as a special cell that belongs to both tendrils
-                    // This will help create a visual branch
-                    gridUpdates.set(`${divergePoint.y}-${divergePoint.x}`, {
-                        type: 'tendril',
-                        color: '#FFFFFF', // Use a different color to highlight the branch point
-                        tendrilId: `${tendril.id},${branchId}`, // Mark as belonging to both tendrils
-                        sourceId: tendril.sourceId,
-                        isBranchPoint: true,
-                        branchTime: frameCountRef.current, // When the branch was created
-                        branchVisibleDuration: 30 // Show branch point for this many frames before fading
-                    });
-
-                    // CRITICAL FIX: Immediately add a pulse for the new branch to start its growth
-                    // This ensures the branch starts growing right away
-                    pulsesRef.current.push({
-                        id: getUniquePulseId(),
-                        tendrilId: branchId,
-                        position: 0,
-                    });
-
-                    console.log(`SUCCESS: Tendril ${tendril.id} branched to ${branchId} towards ${branchTarget.x},${branchTarget.y}`); // Log success
-                } else {
-                     console.log(`Failed to select branch target for tendril ${tendril.id}`); // Log failure
-                 }
-            } else {
-                 console.log(`No valid branch targets for tendril ${tendril.id}`); // Log no targets
-             }
+        // Replace old branching logic with call to attemptBranching
+        const branchesCreated = attemptBranching(tendril, currentHead, weightedNeighbors, nextCell, gridUpdates);
+        if (branchesCreated.length > 0) {
+          newBranches.push(...branchesCreated);
         }
 
         // Move to the chosen next cell
@@ -1223,7 +1296,7 @@ const GameOfLifeCanvas = () => {
 
                 // Skip cells that don't exist, don't belong to this tendril, or are connections
                 // Note: Handle cells that could belong to multiple tendrils (at branch points)
-                if (!gridCell) continue; // Skip non-existent cells
+                if (!gridCell) continue;
 
                 // For connections, we'll handle them separately
                 if (gridCell.type === 'connection') continue;
