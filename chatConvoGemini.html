@@ -256,8 +256,8 @@
       body {
         background: #212121 !important; /* Force dark background */
         color: #FFFFFF !important; /* Force light text */
-        padding: 20px 10px;
-        max-width: 100%;
+        margin: 0.5in !important; /* Add CSS margin */
+        max-width: 100%; /* This might need adjustment with margins */
         font-size: 10pt;
         line-height: 1.5;
         -webkit-print-color-adjust: exact; /* Keep these */
@@ -274,11 +274,13 @@
         line-height: 1.5;
         -webkit-print-color-adjust: exact; /* Keep these */
         print-color-adjust: exact;
+        page-break-inside: avoid; /* Try to keep AI messages intact */
       }
       .ai {
         color: #FFFFFF !important; /* Force AI text white */
          max-width: 90%;
         line-height: 1.5;
+        page-break-inside: avoid; /* Try to keep AI messages intact */
       }
       .chat-container {
         gap: 12px; /* Tighter print gap */
@@ -286,6 +288,7 @@
        .message {
          padding: 0;
          font-size: 10pt;
+         page-break-inside: avoid; /* Already present, but ensure it stays */
        }
       h1 {
         color: #FFFFFF !important; /* Force H1 white */
@@ -299,6 +302,7 @@
           border-left-color: rgba(255, 255, 255, 0.3) !important; /* Use original border color */
           color: rgba(255, 255, 255, 0.85) !important; /* Use original text color */
           padding: 0px 0 0px 10px;
+          page-break-inside: avoid;
       }
       .ai code {
         background: rgba(255, 255, 255, 0.1) !important; /* Force code background */
@@ -310,12 +314,14 @@
          /* border: 1px solid #ddd; Remove light mode border */
          padding: 6px 8px;
          line-height: 1.5;
+         page-break-inside: avoid;
        }
        .ai pre code {
          background: none !important; /* Ensure no background override */
          font-size: 9pt;
          color: #FFFFFF !important; /* Force pre code text white */
          line-height: inherit;
+         page-break-inside: avoid;
        }
       .avatar {
         display: none !important;
@@ -326,6 +332,10 @@
        h1, .ai h4 {
            page-break-before: auto;
            page-break-after: avoid;
+       }
+       .intro-box {
+           page-break-inside: avoid;
+           page-break-after: avoid; /* Try not to break right after it */
        }
     }
 
