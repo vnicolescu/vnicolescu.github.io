@@ -27,6 +27,47 @@
       gap: var(--message-gap);
     }
 
+    /* Introduction box styling */
+    .intro-box {
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      border-radius: 12px;
+      padding: 18px 24px;
+      margin: 0 0 40px 0;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .intro-box h2 {
+      font-size: 1.3em;
+      margin-top: 0;
+      margin-bottom: 14px;
+      color: #6366F1;
+      font-weight: 600;
+    }
+
+    .intro-box p, .intro-box ul {
+      margin: 10px 0;
+    }
+
+    .intro-box ul {
+      padding-left: 25px;
+    }
+
+    .intro-box li {
+      margin-bottom: 8px;
+    }
+
+    @media print {
+      .intro-box {
+        background: rgba(99, 102, 241, 0.05);
+        border: 1px solid #6366F1;
+        color: #000000;
+      }
+      .intro-box h2 {
+        color: #6366F1;
+      }
+    }
+
     .message-wrapper {
       display: flex;
       align-items: flex-start;
@@ -512,13 +553,30 @@
     });
   </script>
   <h1>Conversation with ChatGPT</h1>
+
+  <div class="intro-box">
+    <h2>Application Note</h2>
+    <p>Dear DeepMind team,</p>
+    <p>I'm not submitting a traditional cover letter. Instead, I'm sharing an ongoing conversation between myself and an AI assistant who knows me intimately, across hundreds of hours of interaction.</p>
+    <p>This chat reflects something no polished letter could: my living inquiry into the very topics you're hiring for — post-AGI trajectories, machine consciousness, societal impact, meaning-making after intelligence surpasses our own.</p>
+    <p>You'll see me wrestling with the role, asking the AI to assess me candidly, without embellishment. I trust its evaluation. If you see resonance in what's here, I'd be honored to explore further.</p>
+    <p>For more conventional information, my CV is attached, and some of my original thinking can be found in:</p>
+    <ul>
+      <li>"The Brain User's Handbook"</li>
+      <li>brainboi and other agentic LLM projects</li>
+      <li>This public profile: linkedin.com/in/vnicolescu</li>
+    </ul>
+    <p>Warm regards,<br>
+    Vlad Nicolescu</p>
+  </div>
+
   <div class="chat-container">
 
     <div class="message-wrapper user-wrapper">
       <img src="public/icons/vlad_headshot.png" alt="Vlad" class="avatar">
       <div class="message user">So I'm applying to a job as a research scientist in post-AGI research for Google DeepMind. Now, I will paste the description of this job role. And I just want you to be as honest as possible and as clear as possible as to if this is the right job for me. And if I'm the right person for the job, that's it. Honestly and clearly. Because at this point, I think that you know more things about me than I can recall in any given moment. You also have my most bare expression of myself. So feel free to talk to the employers directly as if I'm not watching without any positive or negative bias. Just as things as they are. Think of it as a collaboration between you, me, and them to unfold the best future possible, even if this is a future without me in this role.
 
-<h5>[DeepMind Post-AGI Research Scientist Job Description]</h5>
+[DeepMind Post-AGI Research Scientist Job Description]
 </div>
     </div>
 
