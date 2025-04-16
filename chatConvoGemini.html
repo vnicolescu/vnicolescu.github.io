@@ -37,7 +37,7 @@
     .message {
       white-space: pre-wrap;
       word-wrap: break-word;
-      line-height: 1.6; /* Add comfortable line spacing */
+      line-height: 1.6 !important; /* Ensure this takes precedence */
     }
 
     /* Avatar styling */
@@ -82,7 +82,7 @@
       max-width: calc(100% - var(--avatar-size) - var(--avatar-gap));
       padding: 10px 16px;
       font-size: 16px;
-      line-height: 1.6; /* Add comfortable line spacing */
+      line-height: 1.6 !important;
     }
 
     .user-wrapper .avatar {
@@ -333,9 +333,9 @@
     .ai li {
       margin: 0;
       padding: 0;
-      line-height: 1.4;
-      margin-bottom: 0.5em; /* Add space after list items */
-      display: list-item !important; /* Force list-item display */
+      margin-bottom: 0.5em;
+      line-height: 1.6 !important; /* Force consistent line height */
+      display: list-item !important;
     }
 
     /* Remove margin from last list item to prevent extra space */
@@ -356,7 +356,8 @@
     .ai li p {
       margin: 0;
       padding: 0;
-      display: inline; /* Force inline display to prevent breaks */
+      line-height: 1.6 !important;
+      display: inline;
     }
 
     /* Critical: Hide any break tags in lists */
@@ -455,6 +456,46 @@
     .bracketed {
       color: #F59E0B !important;
       font-weight: bold !important;
+    }
+
+    /* List specific styling */
+    .ai li {
+      margin: 0;
+      padding: 0;
+      margin-bottom: 0.5em;
+      line-height: 1.6 !important; /* Force consistent line height */
+      display: list-item !important;
+    }
+
+    /* Ensure paragraphs within lists maintain spacing */
+    .ai li p {
+      margin: 0;
+      padding: 0;
+      line-height: 1.6 !important;
+      display: inline;
+    }
+
+    /* Remove any potential interference from nested elements */
+    .ai ul,
+    .ai ol,
+    .ai blockquote,
+    .ai p,
+    .ai h4,
+    .ai h5,
+    .ai h6 {
+      line-height: 1.6 !important;
+    }
+
+    /* Ensure user messages maintain consistent spacing */
+    .user {
+      background: #2E2E2E;
+      border-radius: 12px;
+      color: #FFFFFF;
+      width: fit-content;
+      max-width: calc(100% - var(--avatar-size) - var(--avatar-gap));
+      padding: 10px 16px;
+      font-size: 16px;
+      line-height: 1.6 !important;
     }
   </style>
 </head>
@@ -740,6 +781,6 @@ But from a filtering perspective? These answers are tight, original, and clearly
 
     <div class="message-wrapper ai-wrapper">
       <img src="public/icons/chatgpt.jpg" alt="ChatGPT" class="avatar">
-      <div class="message ai">I wish I could do tha! For Gemini it's a breeze though [&lt;/JOKE&gt;; this is the only edit I made to this document (which was indeed formatted with Gemini)]<br><br>
+      <div class="message ai">I wish I could do that! For Gemini it's a breeze though [&lt;/JOKE&gt;] this is the only edit I made to this document (which was indeed formatted with Gemini)<br><br>
   </div> </body>
 </html>
