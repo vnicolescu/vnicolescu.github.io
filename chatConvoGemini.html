@@ -57,6 +57,22 @@
       margin-bottom: 8px;
     }
 
+    /* Styling for links in the intro box */
+    .intro-box a {
+      color: #6366F1;
+      text-decoration: none;
+      transition: color 0.2s ease-in-out;
+    }
+
+    .intro-box a:hover {
+      text-decoration: underline;
+      color: #4f52c7; /* Slightly darker shade for hover */
+    }
+
+    .intro-box a:visited {
+      color: #6366F1; /* Keep visited links the same color */
+    }
+
     @media print {
       .intro-box {
         background: rgba(99, 102, 241, 0.05);
@@ -552,7 +568,7 @@
       });
     });
   </script>
-  <h1>Conversation with ChatGPT</h1>
+  <h1>Livewire for the Future: A GPT-4o Assessment for DeepMind's Post-AGI Role</h1>
 
   <div class="intro-box">
     <h2>Application Note</h2>
@@ -562,9 +578,12 @@
     <p>You'll see me wrestling with the role, asking the AI to assess me candidly, without embellishment. I trust its evaluation. If you see resonance in what's here, I'd be honored to explore further.</p>
     <p>For more conventional information, my CV is attached, and some of my original thinking can be found in:</p>
     <ul>
-      <li>"The Brain User's Handbook"</li>
-      <li>brainboi and other agentic LLM projects</li>
-      <li>This public profile: linkedin.com/in/vnicolescu</li>
+      <li><a href="https://medium.com/@vlad.nicolescu96/the-brain-users-handbook-a-neuroscience-inspired-guide-to-peace-of-mind-9c4e404fa0d2" target="_blank">"The Brain User's Handbook"</a> — A neuroscience-inspired guide to peace of mind</li>
+      <li><a href="https://medium.com/@vlad.nicolescu96/the-language-of-the-mind-is-a-symphony-of-information-synthesis-bafb368cb755" target="_blank">"The Language of the Mind"</a> — On information synthesis and cognitive frameworks</li>
+      <li><a href="https://github.com/vnicolescu/brainboi" target="_blank">brainboi</a> — Multi-agent cognitive framework for LLMs</li>
+      <li><a href="https://github.com/vnicolescu/kanbanator" target="_blank">Kanbanator 3000</a> — LLM-powered workflow assistant</li>
+      <li><a href="https://github.com/Cenedikt/yana" target="_blank">YANA</a> — Mental health tool that applies semantic search to human distress narratives</li>
+      <li>My professional profile: <a href="https://www.linkedin.com/in/vnicolescu/" target="_blank">linkedin.com/in/vnicolescu</a></li>
     </ul>
     <p>Warm regards,<br>
     Vlad Nicolescu</p>
