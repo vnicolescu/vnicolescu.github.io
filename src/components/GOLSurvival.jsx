@@ -134,9 +134,9 @@ const GOLSurvival = () => {
   const gridDimensions = useRef({ width: 0, height: 0 });
 
   // --- State for Simulation Parameters ---
-  const [signalFrequency, setSignalFrequency] = useState(1.5); // Default 1.5 Hz
+  const [signalFrequency, setSignalFrequency] = useState(5.0); // Default 5 Hz (was 1.5)
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
-  const [pulseSpeed, setPulseSpeed] = useState(7.0); // Increased default speed again to 7.0
+  const [pulseSpeed, setPulseSpeed] = useState(10.0); // Default 10 cells/sec (was 7.0)
   const [directionWeights, setDirectionWeights] = useState([
     0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
     0.1, 0, 0.1,    // Left, Center, Right
@@ -531,14 +531,20 @@ const GOLSurvival = () => {
       let emittedCount = 0;
       sourcesRef.current.forEach(source => {
           // Only emit from active sources with energy
-          if (!source.isActive || source.energy <= 0 || source.state !== 'active') {
+          // More robust source check
+          if (!source || !source.id || !source.isActive || source.energy <= 0 || source.state !== 'active') {
               return;
           }
 
           // Find root tendrils (starting at the source) belonging to this source
           tendrilsRef.current.forEach(tendril => {
+               // More robust tendril check
+              if (!tendril || !tendril.id || !tendril.path || tendril.path.length === 0) {
+                  return;
+              }
+
               if (tendril.sourceId === source.id &&
-                  tendril.path.length > 0 &&
+                  tendril.path.length > 0 && // Check path exists (redundant but safe)
                   tendril.path[0].x === source.x &&
                   tendril.path[0].y === source.y &&
                   (tendril.state === 'growing' || tendril.state === 'connected') && // Can propagate if growing or stable
@@ -1876,12 +1882,12 @@ const GOLSurvival = () => {
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48 shadow-lg">
                 <div className="flex items-center justify-between">
                    <label htmlFor="signalFrequency" className="flex-1 mr-1">Signal Freq:</label>
-                   <input type="range" id="signalFrequency" min="0.1" max="5.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
+                   <input type="range" id="signalFrequency" min="1.0" max="10.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
                    <span className="w-8 text-right ml-1">{signalFrequency.toFixed(1)} Hz</span>
                  </div>
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseSpeed" className="flex-1 mr-1">Pulse Speed:</label>
-                   <input type="range" id="pulseSpeed" min="0.5" max="10.0" step="0.5" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
+                   <input type="range" id="pulseSpeed" min="5.0" max="20.0" step="0.5" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
                    <span className="w-8 text-right ml-1">{pulseSpeed.toFixed(1)}</span>
                  </div>
                  <div className="flex items-center justify-between">
