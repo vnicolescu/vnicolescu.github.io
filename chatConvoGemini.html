@@ -14,9 +14,9 @@
       font-family: "Söhne", "Helvetica Neue", Helvetica, Arial, sans-serif;
       background: #212121;
       color: #FFFFFF;
-      padding: 40px 20px;
+      padding: 40px 20px; /* Padding for screen view */
       max-width: 800px;
-      margin: auto;
+      margin: auto; /* Center content on screen */
       line-height: 1.5;
       font-size: 16px;
     }
@@ -73,17 +73,6 @@
       color: #6366F1; /* Keep visited links the same color */
     }
 
-    @media print {
-      .intro-box {
-        background: rgba(99, 102, 241, 0.05);
-        border: 1px solid #6366F1;
-        color: #000000;
-      }
-      .intro-box h2 {
-        color: #6366F1;
-      }
-    }
-
     .message-wrapper {
       display: flex;
       align-items: flex-start;
@@ -99,12 +88,11 @@
 
     /* Avatar styling */
     .avatar {
-      width: var(--avatar-size);
-      height: var(--avatar-size);
+      display: inline-block !important;
+      width: var(--avatar-size) !important;
+      height: var(--avatar-size) !important;
+      vertical-align: top;
       border-radius: 50%;
-      flex-shrink: 0;
-      object-fit: cover;
-      display: none; /* Hidden by default */
     }
 
     /* Enable avatars when .show-avatars class is present */
@@ -150,7 +138,7 @@
     h1 {
       text-align: center;
       font-size: 28px;
-      margin-bottom: 40px; /* Slightly Reduced */
+      margin-bottom: 40px;
       color: #FFFFFF;
       font-weight: 500;
     }
@@ -176,20 +164,18 @@
         margin-bottom: 0.5em;
     }
 
-
     strong {
       font-weight: 600;
-      /* color: #FFFFFF; */ /* Inherit color usually better */
     }
 
     ul {
       margin-top: 0em;
       margin-bottom: 0.5em;
-      padding-left: 25px; /* Indent lists */
+      padding-left: 25px;
     }
 
     li {
-      margin-bottom: 1em;
+      margin-bottom: 1em; /* Default list item spacing */
     }
 
     blockquote {
@@ -210,7 +196,7 @@
     }
 
     pre {
-      background: rgba(0, 0, 0, 0.2); /* Darker background for contrast */
+      background: rgba(0, 0, 0, 0.2);
       padding: 12px;
       border-radius: 8px;
       overflow-x: auto;
@@ -220,256 +206,47 @@
     pre code {
       background: none;
       padding: 0;
-      font-size: 14px; /* Ensure consistent font size */
-      border: none;
-      white-space: pre; /* Preserve whitespace strictly in code blocks */
-    }
-
-    .ai code {
-      background: rgba(255, 255, 255, 0.1);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-      font-size: 0.9em;
-    }
-
-    .ai pre {
-      background: rgba(0, 0, 0, 0.2);
-      padding: 10px 12px; /* Adjusted padding */
-      border-radius: 6px; /* Slightly smaller radius */
-      overflow-x: auto;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      line-height: 1.5;
-       /* Uses default margins above */
-    }
-
-    .ai pre code {
-      background: none;
-      padding: 0;
       font-size: 14px;
       border: none;
       white-space: pre;
-      line-height: inherit;
-    }
-
-    @media print {
-      @page {
-        margin: 0.5in 0.7in; /* Set page margins directly */
-        size: auto; /* Allow browser to determine size */
-      }
-      body {
-        background: #212121 !important; /* Force dark background */
-        color: #FFFFFF !important; /* Force light text */
-        /* margin: 0.5in 0.7in !important; Remove margin from body, use @page */
-        max-width: 100%; /* This might need adjustment with margins */
-        font-size: 10pt;
-        line-height: 1.5;
-        -webkit-print-color-adjust: exact; /* Keep these */
-        print-color-adjust: exact;
-      }
-      .user {
-        background: #2E2E2E !important; /* Force user message background */
-        color: #FFFFFF !important; /* Force user message text */
-        border-radius: 8px;
-        width: auto;
-        max-width: 90%;
-        /* border: 1px solid #ddd; Remove light mode border */
-        padding: 6px 10px;
-        line-height: 1.5;
-        -webkit-print-color-adjust: exact; /* Keep these */
-        print-color-adjust: exact;
-        /* page-break-inside: avoid; Relax this rule */
-      }
-      .ai {
-        color: #FFFFFF !important; /* Force AI text white */
-         max-width: 90%;
-        line-height: 1.5;
-        /* page-break-inside: avoid; Relax this rule */
-      }
-      .chat-container {
-        gap: 12px; /* Tighter print gap */
-      }
-       .message {
-         padding: 0;
-         font-size: 10pt;
-         /* page-break-inside: avoid; Relax this rule */
-       }
-      h1 {
-        color: #FFFFFF !important; /* Force H1 white */
-        font-size: 16pt; /* Smaller print H1 */
-        margin-bottom: 15px;
-      }
-      h4 { font-size: 11pt; font-weight: 600; color: #FFFFFF !important; } /* Force H4 white */
-      h5 { font-size: 10pt; font-weight: 600; color: #FFFFFF !important; } /* Force H5 white */
-      h6 { font-size: 10pt; font-weight: 600; color: #FFFFFF !important; } /* Force H6 white */
-      .ai blockquote {
-          border-left-color: rgba(255, 255, 255, 0.3) !important; /* Use original border color */
-          color: rgba(255, 255, 255, 0.85) !important; /* Use original text color */
-          padding: 0px 0 0px 10px;
-          /* page-break-inside: avoid; Relax this rule */
-      }
-      .ai code {
-        background: rgba(255, 255, 255, 0.1) !important; /* Force code background */
-        color: #FFFFFF !important; /* Force code text white */
-        font-size: 9pt;
-      }
-       .ai pre {
-         background: rgba(0, 0, 0, 0.2) !important; /* Force pre background */
-         /* border: 1px solid #ddd; Remove light mode border */
-         padding: 6px 8px;
-         line-height: 1.5;
-         /* page-break-inside: avoid; Relax this rule */
-       }
-       .ai pre code {
-         background: none !important; /* Ensure no background override */
-         font-size: 9pt;
-         color: #FFFFFF !important; /* Force pre code text white */
-         line-height: inherit;
-         /* page-break-inside: avoid; Relax this rule */
-       }
-      .avatar {
-        display: none !important;
-      }
-      .message-wrapper, .message {
-         /* page-break-inside: avoid; Relax this rule */
-      }
-       h1, .ai h4 {
-           page-break-before: avoid !important; /* Try to prevent breaks BEFORE h1/h4 */
-           page-break-after: avoid; /* Keep avoiding breaks AFTER */
-       }
-       .intro-box {
-           /* page-break-inside: avoid; Relax this rule */
-           page-break-after: avoid; /* Try not to break right after it */
-       }
     }
 
     /* Style adjustments specifically within AI messages */
-
-    /* --- Explicitly control paragraph margins within .ai --- */
     .ai p {
-      margin: 0em 0; /* Small top/bottom margin, no left/right */
-      line-height: 1.6; /* Add comfortable line spacing */
+      margin: 0em 0;
+      line-height: 1.6;
     }
+    .ai p + p { margin-top: 0; }
 
-    /* Collapse top margin for adjacent paragraphs */
-    .ai p + p {
-        margin-top: 0;
-    }
-
-    /* --- Control other block element margins --- */
-    .ai ul,
-    .ai ol,
-    .ai blockquote,
-    .ai pre,
+    .ai ul, .ai ol, .ai blockquote, .ai pre,
     .ai h4, .ai h5, .ai h6 {
       margin-top: 0.4em;
       margin-bottom: 0.4em;
     }
-
-    /* Collapse margins between different common adjacent elements */
-    /* (Keep these rules to manage transitions between block types) */
     .ai h4 + p, .ai h4 + ul, .ai h4 + ol, .ai h4 + blockquote,
     .ai h5 + p, .ai h5 + ul, .ai h5 + ol, .ai h5 + blockquote,
     .ai h6 + p, .ai h6 + ul, .ai h6 + ol, .ai h6 + blockquote,
     .ai p + ul, .ai p + ol, .ai p + blockquote, .ai p + pre,
     .ai ul + p, .ai ol + p, .ai ul + blockquote, .ai ol + blockquote,
-    .ai blockquote + p, .ai blockquote + ul, .ai blockquote + ol {
-        margin-top: 0.2em;
-    }
-    .ai ul + ul,
-    .ai ol + ol,
-    .ai blockquote + blockquote,
-    .ai pre + pre,
-    .ai h4 + h4, .ai h5 + h5, .ai h6 + h6 {
-        margin-top: 0; /* Collapse if same type */
-    }
+    .ai blockquote + p, .ai blockquote + ul, .ai blockquote + ol { margin-top: 0.2em; }
+    .ai ul + ul, .ai ol + ol, .ai blockquote + blockquote,
+    .ai pre + pre, .ai h4 + h4, .ai h5 + h5, .ai h6 + h6 { margin-top: 0; }
 
-    /* ... heading, list, blockquote, code styles ... */
-     .ai h4 {
-        font-size: 1.1em;
-        font-weight: 600;
-    }
-    .ai h5 {
-        font-size: 1em;
-        font-weight: 600;
-    }
-    .ai h6 {
-        font-size: 1em;
-        font-weight: 600;
-    }
-    .ai strong {
-      font-weight: 600;
-    }
-    .ai ul, .ai ol {
-      padding-left: 25px;
-      margin-top: 0;
-      margin-bottom: 0;
-    }
-    .ai li {
-      margin: 0;
-      padding: 0;
-      margin-bottom: 0.5em;
-      line-height: 1.6 !important; /* Force consistent line height */
-      display: list-item !important;
-    }
-
-    /* Remove margin from last list item to prevent extra space */
-    .ai li:last-child {
-      margin-bottom: 0;
-    }
-
-    /* Fix nested list spacing */
-    .ai li > ul,
-    .ai li > ol {
-      margin-top: 0;
-      margin-bottom: 0;
-      padding-top: 0;
-      padding-bottom: 0;
-    }
-
-    /* Handle p within li properly */
-    .ai li p {
-      margin: 0;
-      padding: 0;
-      line-height: 1.6 !important;
-      display: inline;
-    }
-
-    /* Critical: Hide any break tags in lists */
-    .ai li br,
-    .ai li > ul br,
-    .ai li + br,
-    .ai ul + br,
-    .ai li > * + br {
-      display: none !important;
-      content: "" !important;
-      height: 0 !important;
-    }
-
-    /* Fix first/last child margins */
-    .ai li > :first-child {
-      margin-top: 0;
-    }
-
-    .ai li > :last-child {
-      margin-bottom: 0;
-    }
-
-    /* Remove whitespace from display */
-    .ai ul, .ai li {
-      white-space: normal; /* Prevent whitespace preservation */
-    }
-
-    /* Force adjacent list items to display without breaks */
-    .ai li + li {
-      margin-top: 0;
-    }
-
-    /* Target the specific nested list structures in the document */
-    .ai ul ul {
-      margin-top: 0;
-      margin-bottom: 0;
-    }
+    .ai h4 { font-size: 1.1em; font-weight: 600; }
+    .ai h5 { font-size: 1em; font-weight: 600; }
+    .ai h6 { font-size: 1em; font-weight: 600; }
+    .ai strong { font-weight: 600; }
+    .ai ul, .ai ol { padding-left: 25px; margin-top: 0; margin-bottom: 0; }
+    .ai li { margin: 0; padding: 0; margin-bottom: 0.5em; line-height: 1.6 !important; display: list-item !important; }
+    .ai li:last-child { margin-bottom: 0; }
+    .ai li > ul, .ai li > ol { margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+    .ai li p { margin: 0; padding: 0; line-height: 1.6 !important; display: inline; }
+    .ai li br, .ai li > ul br, .ai li + br, .ai ul + br, .ai li > * + br { display: none !important; content: "" !important; height: 0 !important; }
+    .ai li > :first-child { margin-top: 0; }
+    .ai li > :last-child { margin-bottom: 0; }
+    .ai ul, .ai li { white-space: normal; }
+    .ai li + li { margin-top: 0; }
+    .ai ul ul { margin-top: 0; margin-bottom: 0; }
 
     .ai blockquote {
       border-left: 3px solid rgba(255, 255, 255, 0.3);
@@ -477,27 +254,13 @@
       padding: 0.3em 0 0.3em 15px;
       color: rgba(255, 255, 255, 0.85);
     }
-    .ai blockquote > :first-child {
-        margin-top: 0;
-    }
-    .ai blockquote > :last-child {
-        margin-bottom: 0;
-    }
-    .ai blockquote p,
-    .ai blockquote ul,
-    .ai blockquote ol {
-        margin-top: 0.2em;
-        margin-bottom: 0.2em;
-    }
-    .ai blockquote p + p,
-    .ai blockquote ul + ul,
-    .ai blockquote ol + ol,
-    .ai blockquote p + ul,
-    .ai blockquote p + ol,
-    .ai blockquote ul + p,
-    .ai blockquote ol + p {
-        margin-top: 0;
-    }
+    .ai blockquote > :first-child { margin-top: 0; }
+    .ai blockquote > :last-child { margin-bottom: 0; }
+    .ai blockquote p, .ai blockquote ul, .ai blockquote ol { margin-top: 0.2em; margin-bottom: 0.2em; }
+    .ai blockquote p + p, .ai blockquote ul + ul, .ai blockquote ol + ol,
+    .ai blockquote p + ul, .ai blockquote p + ol,
+    .ai blockquote ul + p, .ai blockquote ol + p { margin-top: 0; }
+
     .ai code {
       background: rgba(255, 255, 255, 0.1);
       padding: 2px 6px;
@@ -526,55 +289,153 @@
     .message {
       color: #FFFFFF;
     }
-
-    /* Style the bracketed spans */
     .bracketed {
       color: #F59E0B !important;
       font-weight: bold !important;
     }
 
-    /* List specific styling */
-    .ai li {
-      margin: 0;
-      padding: 0;
-      margin-bottom: 0.5em;
-      line-height: 1.6 !important; /* Force consistent line height */
-      display: list-item !important;
-    }
+    /* --- PRINT STYLES --- */
+    @media print {
+      @page {
+        margin-top: 13mm;
+        margin-bottom: 13mm;
+      }
+      body {
+        background: #212121 !important; /* Force dark background */
+        color: #FFFFFF !important; /* Force light text */
+        margin: 0 !important; /* Remove body margin for print */
+        padding: 0 !important; /* Remove body padding for print */
+        max-width: 100%;
+        font-size: 10pt;
+        line-height: 1.5;
+        -webkit-print-color-adjust: exact; /* Keep these */
+        print-color-adjust: exact;
+      }
 
-    /* Ensure paragraphs within lists maintain spacing */
-    .ai li p {
-      margin: 0;
-      padding: 0;
-      line-height: 1.6 !important;
-      display: inline;
-    }
+      .print-wrapper {
+         padding: 0 18mm !important; /* Only Left/Right padding */
+         box-sizing: border-box; /* Include padding in size */
+         width: 100%; /* Ensure wrapper takes full width */
+         height: 100%; /* Ensure wrapper takes full height */
+         -webkit-print-color-adjust: exact; /* Ensure wrapper also respects colors */
+         print-color-adjust: exact;
+      }
 
-    /* Remove any potential interference from nested elements */
-    .ai ul,
-    .ai ol,
-    .ai blockquote,
-    .ai p,
-    .ai h4,
-    .ai h5,
-    .ai h6 {
-      line-height: 1.6 !important;
-    }
+      .user { /* User message bubble */
+        background: #2E2E2E !important; /* Force user message background */
+        color: #FFFFFF !important; /* Force user message text */
+        border-radius: 8px;
+        width: auto;
+        max-width: 90%;
+        padding: 6px 10px;
+        margin-top: 6px; /* Add explicit vertical margin */
+        margin-bottom: 6px; /* Add explicit vertical margin */
+        line-height: 1.5;
+        -webkit-print-color-adjust: exact; /* Keep these */
+        print-color-adjust: exact;
+      }
 
-    /* Ensure user messages maintain consistent spacing */
-    .user {
-      background: #2E2E2E;
-      border-radius: 12px;
-      color: #FFFFFF;
-      width: fit-content;
-      max-width: calc(100% - var(--avatar-size) - var(--avatar-gap));
-      padding: 10px 16px;
-      font-size: 16px;
-      line-height: 1.6 !important;
-    }
+      .ai {
+        color: #FFFFFF !important; /* Force AI text white */
+        max-width: 90%;
+        line-height: 1.5;
+      }
+
+      .chat-container {
+        gap: 12px; /* Tighter print gap */
+      }
+
+      .message {
+         padding: 0;
+         font-size: 10pt;
+      }
+
+      h1 {
+        color: #FFFFFF !important; /* Force H1 white */
+        font-size: 16pt; /* Smaller print H1 */
+        margin-bottom: 15px;
+        page-break-before: avoid !important;
+        page-break-after: avoid;
+      }
+
+      .ai h4 {
+        font-size: 11pt;
+        font-weight: 600;
+        color: #FFFFFF !important;
+        page-break-before: avoid !important;
+        page-break-after: avoid;
+      }
+
+      .ai h5 {
+        font-size: 10pt;
+        font-weight: 600;
+        color: #FFFFFF !important;
+        page-break-before: avoid;
+        page-break-after: avoid;
+      }
+
+      .ai h6 {
+        font-size: 10pt;
+        font-weight: 600;
+        color: #FFFFFF !important;
+        page-break-before: avoid;
+        page-break-after: avoid;
+      }
+
+      .ai blockquote {
+          border-left-color: rgba(255, 255, 255, 0.3) !important;
+          color: rgba(255, 255, 255, 0.85) !important;
+          padding: 0px 0 0px 10px;
+          page-break-inside: avoid; /* Keep avoid on blockquote */
+      }
+
+      .ai code {
+        background: rgba(255, 255, 255, 0.1) !important;
+        color: #FFFFFF !important;
+        font-size: 9pt;
+      }
+
+       .ai pre {
+         background: rgba(0, 0, 0, 0.2) !important;
+         padding: 6px 8px;
+         line-height: 1.5;
+         page-break-inside: avoid; /* Keep avoid on pre */
+       }
+
+       .ai pre code { /* Code within pre blocks */
+         background: none !important;
+         font-size: 9pt;
+         color: #FFFFFF !important;
+         line-height: inherit;
+       }
+
+      .avatar { /* Avatar images */
+        display: inline-block !important; /* Make avatars visible */
+        width: var(--avatar-size) !important; /* Explicitly set size */
+        height: var(--avatar-size) !important; /* Explicitly set size */
+        vertical-align: top; /* Align with top of text */
+        border-radius: 50%; /* Ensure roundness */
+      }
+
+      .message-wrapper {
+         /* Relaxed page-break-inside */
+      }
+
+       .intro-box { /* Intro box styling */
+           page-break-inside: avoid; /* Keep avoid on intro-box */
+           page-break-after: avoid; /* Keep */
+           -webkit-print-color-adjust: exact; /* Ensure intro box respects colors */
+           print-color-adjust: exact;
+       }
+
+      .user-wrapper { /* Wrapper for user message + avatar */
+        /* Removed margin-bottom, margin is on .user now */
+      }
+    } /* End of @media print */
   </style>
 </head>
 <body class="show-avatars">
+<div class="print-wrapper">
   <script>
     document.addEventListener('DOMContentLoaded', function() {
       const messages = document.querySelectorAll('.message');
@@ -809,7 +670,7 @@ I believe the most important answers will emerge from cross-domain synthesis, no
 </blockquote>
 <h4>🔹 Q3: Is there anything else you'd like to add in support of your application?</h4>
 <blockquote>
-I've shared a long-form chat with an AI assistant who knows me well, which offers a more complete view of how I think, reflect, and work. It's raw, thoughtful, and intentional — a better window into my alignment with this role than a traditional cover letter.<br>
+I've shared a long-form chat with an AI assistant who has worked with me across hundreds of hours. In it, I ask the system to assess whether I'm right for this role — and whether this role is right for me. I believe it offers a more honest and multidimensional view of my alignment with this mission than a polished cover letter ever could.<br>
 My portfolio includes experimental multi-agent systems, LLM infrastructure, and writings that blend cognitive science and philosophy. I believe that creativity, humility, and interdisciplinary rigor are essential tools for post-AGI research — and I bring all three.
 </blockquote>
 Would you like to review or rewrite any of these together?<br>
@@ -874,5 +735,8 @@ But from a filtering perspective? These answers are tight, original, and clearly
     <div class="message-wrapper ai-wrapper">
       <img src="public/icons/chatgpt.jpg" alt="ChatGPT" class="avatar">
       <div class="message ai">I wish I could do that! For Gemini it's a breeze though [&lt;/JOKE&gt;] [this is the only edit I made to this document, which was indeed formatted with Gemini]<br><br>
-  </div> </body>
+  </div>
+</div>
+</div>
+</body>
 </html>
