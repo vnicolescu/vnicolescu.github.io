@@ -29,7 +29,7 @@ const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsor
 // --- Colors ---
 const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
 const BACKGROUND_COLOR = '#060C14'; // Deep blue‑black (updated)
-const OLD_TENDRIL_COLOR = '#2e7ed3';  // Senescent blue
+const OLD_TENDRIL_COLOR = '#2363a3';  // Senescent blue (updated)
 const YOUNG_TENDRIL_COLOR = '#ff9c32'; // Leading edge orange
 const SIGNAL_COLOR = '#FFFFFF'; // White
 const FOOD_COLOR = '#10B981'; // Emerald Green
@@ -1469,33 +1469,55 @@ const GOLSurvival = () => {
            context.globalAlpha = 1.0;
 
            // Draw signals (with glow)
-           context.fillStyle = SIGNAL_COLOR;
            tendrilsRef.current.forEach(tendril => {
-               if (tendril && tendril.signalState === 'propagating' &&
+               if (
+                   tendril &&
+                   tendril.signalState === 'propagating' &&
                    tendril.signalPosition >= 0 &&
                    tendril.path && Array.isArray(tendril.path) &&
-                   tendril.signalPosition < tendril.path.length) {
+                   tendril.signalPosition < tendril.path.length
+               ) {
+                   // Draw the tip and up to 3 tail cells
+                   for (let tail = 0; tail <= 3; tail++) {
+                       const pos = tendril.signalPosition - tail;
+                       if (pos < 0) break;
+                       const coord = tendril.path[pos];
+                       if (!coord || !isWithinBounds(coord.x, coord.y)) continue;
 
-                   const signalCoord = tendril.path[tendril.signalPosition];
-                   if (signalCoord && isWithinBounds(signalCoord.x, signalCoord.y)) {
-                       // Draw signal with enhanced visibility
-                       const opacity = Math.min(1.0, (tendril.opacity || 1.0) * PULSE_VISIBILITY);
+                       // Opacity and glow for each tail segment
+                       let opacity = 1.0;
+                       let shadowBlur = 16;
+                       switch (tail) {
+                           case 0:
+                               opacity = 1.0; shadowBlur = 16; break; // Tip
+                           case 1:
+                               opacity = 0.75; shadowBlur = 10; break;
+                           case 2:
+                               opacity = 0.5; shadowBlur = 6; break;
+                           case 3:
+                               opacity = 0.25; shadowBlur = 3; break;
+                           default:
+                               opacity = 0; shadowBlur = 0;
+                       }
+                       // Multiply by tendril opacity in case it's fading
+                       opacity *= (tendril.opacity || 1.0);
+
                        context.globalAlpha = opacity;
-                       context.shadowBlur = 10;
-                       context.shadowColor = '#FFFFFFAA';
+                       context.shadowBlur = shadowBlur;
+                       context.shadowColor = 'rgba(255,255,255,1)';
+                       context.fillStyle = SIGNAL_COLOR;
                        context.fillRect(
-                           signalCoord.x * CELL_SIZE,
-                           signalCoord.y * CELL_SIZE,
+                           coord.x * CELL_SIZE,
+                           coord.y * CELL_SIZE,
                            CELL_SIZE, CELL_SIZE
                        );
-                       context.shadowBlur = 0;
-                       context.shadowColor = 'transparent';
                    }
+                   // Reset shadow after drawing
+                   context.shadowBlur = 0;
+                   context.shadowColor = 'transparent';
+                   context.globalAlpha = 1.0;
                }
            });
-
-           // Reset again
-           context.globalAlpha = 1.0;
 
            // Draw energy info for sources
            if (sourcesRef.current && Array.isArray(sourcesRef.current)) {

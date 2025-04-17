@@ -108,3 +108,11 @@
     - Updated grid overlay lines to use the same color.
     - Main container now uses the new background color via inline style.
   - **Status:** Visual baseline improved. Ready for further color and style enhancements.
+
+- **2024-06-12**: Pulse Glow Effect Enhancement
+  - **Feature:** Added a glowing white pulse with a 3-cell trailing tail to the signal visualization in `GOLSurvival.jsx`.
+  - **Achievements:**
+    - Pulse tip glows white at 100% opacity with strong glow.
+    - Tail of up to 3 cells behind the tip, with opacities and glow at 75%, 50%, and 25% respectively.
+    - Both fill and shadow (glow) follow these opacities for a smooth, energetic effect.
+  - **Status:** Pulse visualization is now more dynamic and visually clear. Ready for further visual polish.
