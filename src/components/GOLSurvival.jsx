@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
 const CELL_SIZE = 12; // Increased cell size for bolder, retro-pixel look
+const GROWTH_FACTOR = 1; // Cells advanced per pulse at each active tip
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
 const DEFAULT_SIGNAL_FREQUENCY = 10.0; // Hz – baseline, slider mid
@@ -393,6 +394,7 @@ const GOLSurvival = () => {
               parentId: null,
               blockedFrame: null, // Track when it became blocked
               creationFrame: frameCountRef.current,
+              growthRemaining: 0, // NEW: cells left to grow in current pulse
           };
           tendrilsRef.current.set(tendrilId, newTendril);
 
@@ -556,6 +558,7 @@ const GOLSurvival = () => {
                   tendril.signalState = 'propagating';
                   tendril.signalPosition = 0;
                   tendril.fractionalPos = 0;
+                  tendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
                   emittedCount++;
               }
           });
@@ -576,9 +579,33 @@ const GOLSurvival = () => {
           const pathLength = tendril.path.length;
 
           if (currentSignalPos >= pathLength - 1) {
-              // Signal already at the tip, mark for processing
-              signalsToUpdate.push({ tendrilId, nextState: 'reached_tip', nextPos: pathLength - 1, fractionalPos: pathLength -1 });
-              newlyReachedTips.add(tendrilId);
+              // We are at the tip. If growth quota remains, attempt one growth step.
+              if (tendril.growthRemaining && tendril.growthRemaining > 0) {
+                  const source = getSourceById(tendril.sourceId);
+                  if (source) {
+                      const grew = tryGrowTendril(tendril, source);
+                      if (grew) {
+                          tendril.growthRemaining -= 1;
+                          // Let the signal sit on the brand‑new tip so it visually leads growth
+                          attemptBranching && attemptBranching(tendril, source);
+                          signalsToUpdate.push({
+                              tendrilId,
+                              nextState: 'propagating',
+                              nextPos: tendril.path.length - 1,
+                              fractionalPos: tendril.path.length - 1
+                          });
+                          return; // Skip the rest of this iteration
+                      } else {
+                          // Could not grow – block further attempts this pulse
+                          tendril.growthRemaining = 0;
+                      }
+                  } else {
+                      tendril.growthRemaining = 0;
+                  }
+              }
+
+              // No growth remaining – finish the pulse
+              signalsToUpdate.push({ tendrilId, nextState: 'idle', nextPos: pathLength - 1, fractionalPos: pathLength -1 });
               return;
           }
 
@@ -589,6 +616,7 @@ const GOLSurvival = () => {
               return;
           }
 
+          // Retrieve the grid cell at the current path point
           const cell = gridRef.current[currentPathPoint.y]?.[currentPathPoint.x];
           if (!cell || cell.type === 'empty') {
               console.warn(`Signal for ${tendrilId} on invalid grid cell type: ${cell?.type} at (${currentPathPoint.x}, ${currentPathPoint.y}). Stopping signal.`);
@@ -637,7 +665,7 @@ const GOLSurvival = () => {
       });
 
       return newlyReachedTips;
-  }, [isWithinBounds, getTendrilById]);
+  }, [isWithinBounds, getTendrilById, getSourceById, tryGrowTendril, attemptBranching]);
 
   // New helper function to check for branch points
   const checkForBranchPoints = (tendril, startPos, endPos) => {
@@ -688,14 +716,30 @@ const GOLSurvival = () => {
               return;
           }
 
-          // --- Attempt Growth ---
-          // console.log(`  -> Attempting growth for Tendril ${tendrilId} (Source Energy: ${source.energy.toFixed(0)})`);
-          const grew = tryGrowTendril(tendril, source); // Pass source for energy check
+          // --- Growth Loop controlled by GROWTH_FACTOR ---
+          for (let step = 0; step < GROWTH_FACTOR; step++) {
+              const grew = tryGrowTendril(tendril, source);
 
-          // --- Attempt Branching (only if growth occurred) ---
-          if (grew && tendril.state === 'growing') { // Ensure tendril is still growing after the attempt
-               attemptBranching(tendril, source); // Pass source for energy check
+              if (!grew) {
+                  // Stop if blocked or could not grow further
+                  break;
+              }
+
+              // Visually push the pulse to the new tip for each successful cell grown
+              tendril.signalPosition = tendril.path.length - 1;
+              tendril.signalState = 'propagating';
+              tendril.fractionalPos = tendril.path.length - 1;
+
+              // Optionally attempt branching after each growth step
+              if (tendril.state === 'growing') {
+                  attemptBranching(tendril, source);
+              }
           }
+
+          // After completing growthFactor steps (or blocking), stop the pulse until the next emission
+          tendril.signalState = 'idle';
+          tendril.signalPosition = -1;
+          tendril.fractionalPos = -1;
       });
   }, [getTendrilById, getSourceById /* Add tryGrowTendril, attemptBranching dependencies later */]);
 
@@ -787,7 +831,8 @@ const GOLSurvival = () => {
      return false;
   };
 
-  const tryGrowTendril = useCallback((tendril, source) => {
+  // Hoisted declaration so it can be referenced above its definition
+  function tryGrowTendril(tendril, source) {
       if (tendril.state !== 'growing' && tendril.state !== 'connected') return false;
       if (source.energy < CELL_ENERGY_COST) {
           tendril.state = 'blocked'; // Block if source can't afford growth
@@ -924,10 +969,10 @@ const GOLSurvival = () => {
       gridCell.creationFrame = frameCountRef.current;
 
       return true; // Growth occurred
+  }
 
-  }, [isWithinBounds, simParamsRef, handleFoodCollision, handleTendrilCollision, getTendrilById /* Add more deps */]);
-
-  const attemptBranching = useCallback((parentTendril, source) => {
+  // Hoisted declaration – can be referenced earlier in propagateSignal
+  function attemptBranching(parentTendril, source) {
       // Add more logging to debug branching
       try {
           // Check basic conditions
@@ -1007,6 +1052,7 @@ const GOLSurvival = () => {
               isBranch: true,
               parentId: parentTendril.id,
               creationFrame: frameCountRef.current,
+              growthRemaining: 0, // NEW: cells left to grow in current pulse
           };
 
           // Add to tendrils collection
@@ -1043,7 +1089,7 @@ const GOLSurvival = () => {
           console.error("Error in attemptBranching:", err);
           return false;
       }
-  }, [simParamsRef, getNeighbors, getTendrilById]);
+  }
 
   const triggerPathOptimization = useCallback((sourceId1, sourceId2, connectionPoint) => {
       // TODO: Implement path optimization logic (potentially complex)
@@ -1286,6 +1332,7 @@ const GOLSurvival = () => {
                   isBranch: false,
                   parentId: null,
                   creationFrame: frameCountRef.current,
+                  growthRemaining: 0, // NEW: cells left to grow in current pulse
               };
 
               tendrilsRef.current.set(tendrilId, newTendril);
@@ -1353,7 +1400,7 @@ const GOLSurvival = () => {
                console.log(`Grid cell counts:`, cellCounts);
            }
 
-           // Draw grid cells
+           // === First pass: Draw all cells (no glow, no grid) ===
            for (let y = 0; y < gridHeight; y++) {
                if (!gridRef.current[y] || !Array.isArray(gridRef.current[y])) continue;
 
@@ -1376,46 +1423,30 @@ const GOLSurvival = () => {
 
                        case 'food':
                            drawColor = FOOD_COLOR;
-                           // Make food pulse slightly for visibility
-                           const pulseAmount = Math.sin(frameCountRef.current * 0.1) * 0.3;
-                           cellOpacity = 0.7 + (isNaN(pulseAmount) ? 0 : pulseAmount);
+                           // Constant opacity to avoid flicker
+                           cellOpacity = 1.0;
 
-                           // Draw food with extra visibility
                            context.globalAlpha = cellOpacity;
                            context.fillStyle = drawColor;
-
-                           // Draw slightly larger for better visibility
-                           const foodSize = CELL_SIZE * 1.5;
-                           const offset = (foodSize - CELL_SIZE) / 2;
-                           context.fillRect(
-                               x * CELL_SIZE - offset,
-                               y * CELL_SIZE - offset,
-                               foodSize, foodSize
-                           );
-                           continue; // Skip the standard drawing for food
+                           // Standard cell-sized rectangle (glow added later)
+                           context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                           continue; // Skip further processing for food (no branch checks)
 
                        case 'tendril': {
                            // Extract basic info safely
                            const tendrilIds = (cell.tendrilId || '').split(',').filter(Boolean);
-
-                           // If we have no valid tendril IDs, treat as background
                            if (tendrilIds.length === 0) {
                                drawColor = BACKGROUND_COLOR;
                                cellOpacity = 0;
                                break;
                            }
-
-                           // Get the first tendril (primary owner)
                            const tendril = getTendrilById(tendrilIds[0]);
-
                            if (tendril) {
                                // Base opacity from tendril
                                cellOpacity = tendril.opacity || 1.0;
-
                                // Calculate age and determine color
                                const creationFrame = cell.creationFrame || 0;
                                const age = calculateAge(creationFrame, frameCountRef.current);
-
                                if (tendril.state === 'reabsorbing') {
                                    // Use opacity for interpolation
                                    const t = tendril.opacity || 0;
@@ -1426,31 +1457,22 @@ const GOLSurvival = () => {
                                    // Normal growing/connected/blocked state
                                    drawColor = getColorFromAge(age);
                                }
-
                                // Highlight branch points
                                if (cell.isBranchPoint) {
                                    try {
-                                       // Safety check for valid color
                                        if (typeof drawColor === 'string' && drawColor.startsWith('#')) {
                                            const [r, g, b] = parseHex(drawColor);
-
-                                           // Brighten by 20% safely
                                            const brightenFactor = 1.2;
                                            const r2 = Math.min(255, Math.floor(r * brightenFactor));
                                            const g2 = Math.min(255, Math.floor(g * brightenFactor));
                                            const b2 = Math.min(255, Math.floor(b * brightenFactor));
-
-                                           drawColor = `#${r2.toString(16).padStart(2, '0')}${
-                                               g2.toString(16).padStart(2, '0')}${
-                                               b2.toString(16).padStart(2, '0')}`;
+                                           drawColor = `#${r2.toString(16).padStart(2, '0')}${g2.toString(16).padStart(2, '0')}${b2.toString(16).padStart(2, '0')}`;
                                        }
                                    } catch (colorErr) {
-                                       console.error("Error brightening branch point:", colorErr);
                                        // Fall back to original color
                                    }
                                }
                            } else {
-                               // Orphaned grid cell - display as background
                                drawColor = BACKGROUND_COLOR;
                                cellOpacity = 0;
                            }
@@ -1465,10 +1487,40 @@ const GOLSurvival = () => {
                }
            }
 
-           // Reset global alpha
+           // === Second pass: Draw grid lines ===
            context.globalAlpha = 1.0;
+           context.strokeStyle = '#060C14'; // Updated grid color
+           context.lineWidth = 3; // 1.5x thickness (was 2)
 
-           // Draw signals (with glow)
+           // Draw vertical lines only between active cells
+           for (let gx = 1; gx < gridWidth; gx++) {
+               for (let gy = 0; gy < gridHeight; gy++) {
+                   const leftCell = gridRef.current[gy][gx - 1];
+                   const rightCell = gridRef.current[gy][gx];
+                   if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
+                       context.beginPath();
+                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
+                       context.lineTo(gx * CELL_SIZE, (gy + 1) * CELL_SIZE);
+                       context.stroke();
+                   }
+               }
+           }
+
+           // Draw horizontal lines only between active cells
+           for (let gy = 1; gy < gridHeight; gy++) {
+               for (let gx = 0; gx < gridWidth; gx++) {
+                   const topCell = gridRef.current[gy - 1][gx];
+                   const bottomCell = gridRef.current[gy][gx];
+                   if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
+                       context.beginPath();
+                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
+                       context.lineTo((gx + 1) * CELL_SIZE, gy * CELL_SIZE);
+                       context.stroke();
+                   }
+               }
+           }
+
+           // === Third pass: Draw pulses (signals) on top of grid ===
            tendrilsRef.current.forEach(tendril => {
                if (
                    tendril &&
@@ -1502,85 +1554,91 @@ const GOLSurvival = () => {
                        // Multiply by tendril opacity in case it's fading
                        opacity *= (tendril.opacity || 1.0);
 
+                       // Determine glow color based on underlying cell
+                       let glowColor = 'rgba(255,255,255,1)';
+                       const cellRef = isWithinBounds(coord.x, coord.y) ? gridRef.current[coord.y][coord.x] : null;
+                       if (cellRef) {
+                           switch (cellRef.type) {
+                               case 'tendril': {
+                                   const age = calculateAge(cellRef.creationFrame || 0, frameCountRef.current);
+                                   glowColor = getColorFromAge(age);
+                                   break;
+                               }
+                               case 'food':
+                                   glowColor = FOOD_COLOR;
+                                   break;
+                               case 'source':
+                                   glowColor = SOURCE_COLOR;
+                                   break;
+                               default:
+                                   glowColor = 'rgba(255,255,255,1)';
+                           }
+                       }
+
+                       context.save();
                        context.globalAlpha = opacity;
                        context.shadowBlur = shadowBlur;
-                       context.shadowColor = 'rgba(255,255,255,1)';
+                       context.shadowColor = glowColor;
                        context.fillStyle = SIGNAL_COLOR;
                        context.fillRect(
                            coord.x * CELL_SIZE,
                            coord.y * CELL_SIZE,
                            CELL_SIZE, CELL_SIZE
                        );
+                       context.restore();
                    }
-                   // Reset shadow after drawing
-                   context.shadowBlur = 0;
-                   context.shadowColor = 'transparent';
-                   context.globalAlpha = 1.0;
                }
            });
 
-           // Draw energy info for sources
-           if (sourcesRef.current && Array.isArray(sourcesRef.current)) {
-               context.font = '12px monospace';
-               sourcesRef.current.forEach((source, index) => {
-                   if (source) {
-                       const energyPercent = Math.floor(((source.energy || 0) / INITIAL_SOURCE_ENERGY) * 100);
-                       const energyText = `S${index}: ${energyPercent}%`;
-
-                       // Color based on energy level
-                       if (source.isActive) {
-                           if (energyPercent > 66) context.fillStyle = '#10B981'; // Green
-                           else if (energyPercent > 33) context.fillStyle = '#F59E0B'; // Yellow
-                           else context.fillStyle = '#EF4444'; // Red
-                       } else {
-                           context.fillStyle = '#6B7280'; // Gray
-                       }
-
-                       const textY = 20 + index * 20;
-                       const raw = Math.floor(source.energy);
-                       context.fillText(`${energyText} (${raw})`, 10, textY);
-
-                       // bar drawing remains...
+           // === Fourth pass: Draw intrinsic glows for tendril cells (on top of everything) ===
+           for (let y = 0; y < gridHeight; y++) {
+               for (let x = 0; x < gridWidth; x++) {
+                   const cell = gridRef.current[y][x];
+                   if (!cell || cell.type !== 'tendril') continue;
+                   const tendrilIds = (cell.tendrilId || '').split(',').filter(Boolean);
+                   if (tendrilIds.length === 0) continue;
+                   const tendril = getTendrilById(tendrilIds[0]);
+                   if (!tendril) continue;
+                   const creationFrame = cell.creationFrame || 0;
+                   const age = calculateAge(creationFrame, frameCountRef.current);
+                   const drawColor = getColorFromAge(age);
+                   // Determine if this cell is the tip of its tendril
+                   const isTip = tendril.path.length > 0 && tendril.path[tendril.path.length - 1].x === x && tendril.path[tendril.path.length - 1].y === y;
+                   // Glow intensity: highest at tip, fades with age
+                   let glowStrength = 0;
+                   if (isTip) {
+                       glowStrength = 32; // Stronger glow at tip
+                   } else {
+                       glowStrength = Math.max(0, 16 * (1 - age / MAX_CELL_AGE));
                    }
-               });
-           }
-
-           // === Grid Overlay (between active cells only) ===
-           context.globalAlpha = 1.0;
-           context.strokeStyle = '#060C14'; // Updated grid color
-           context.lineWidth = 2 * 0.75; // Will update thickness in next step
-
-           // Draw vertical lines only between active cells
-           for (let gx = 1; gx < gridWidth; gx++) {
-               for (let gy = 0; gy < gridHeight; gy++) {
-                   const leftCell = gridRef.current[gy][gx - 1];
-                   const rightCell = gridRef.current[gy][gx];
-                   if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
-                       context.beginPath();
-                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
-                       context.lineTo(gx * CELL_SIZE, (gy + 1) * CELL_SIZE);
-                       context.stroke();
+                   if (glowStrength > 0) {
+                       context.save();
+                       context.globalAlpha = isTip ? 1.0 : 0.9;
+                       context.shadowBlur = glowStrength;
+                       context.shadowColor = drawColor;
+                       // Draw a transparent rect just for the glow
+                       context.fillStyle = 'rgba(0,0,0,0)';
+                       context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                       context.restore();
                    }
                }
            }
 
-           // Draw horizontal lines only between active cells
-           for (let gy = 1; gy < gridHeight; gy++) {
-               for (let gx = 0; gx < gridWidth; gx++) {
-                   const topCell = gridRef.current[gy - 1][gx];
-                   const bottomCell = gridRef.current[gy][gx];
-                   if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
-                       context.beginPath();
-                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
-                       context.lineTo((gx + 1) * CELL_SIZE, gy * CELL_SIZE);
-                       context.stroke();
-                   }
+           // === Additional glow for food cells ===
+           for (let y = 0; y < gridHeight; y++) {
+               for (let x = 0; x < gridWidth; x++) {
+                   const cell = gridRef.current[y][x];
+                   if (!cell || cell.type !== 'food') continue;
+
+                   context.save();
+                   context.globalAlpha = 1.0;
+                   context.shadowBlur = 16;
+                   context.shadowColor = FOOD_COLOR;
+                   context.fillStyle = 'rgba(0,0,0,0)';
+                   context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                   context.restore();
                }
            }
-
-           // Reset strokeStyle in case other draws happen later
-           context.lineWidth = 1;
-           context.strokeStyle = '#000000';
        } catch (err) {
            console.error("Error in drawGridAndElements:", err);
        }
@@ -1742,9 +1800,19 @@ const GOLSurvival = () => {
            }
           context.scale(dpr, dpr);
 
-          const gridWidth = Math.floor(clientWidth / CELL_SIZE);
-          const gridHeight = Math.floor(clientHeight / CELL_SIZE);
+          let gridWidth = Math.floor(clientWidth / CELL_SIZE);
+          let gridHeight = Math.floor(clientHeight / CELL_SIZE);
+          // Force even dimensions so grid lines are uniform
+          if (gridWidth % 2 !== 0) gridWidth -= 1;
+          if (gridHeight % 2 !== 0) gridHeight -= 1;
+
           gridDimensions.current = { width: gridWidth, height: gridHeight };
+
+          // Size canvas to exact cell multiple to avoid stretched lines
+          canvas.width  = gridWidth  * CELL_SIZE * dpr;
+          canvas.height = gridHeight * CELL_SIZE * dpr;
+          canvas.style.width  = `${gridWidth  * CELL_SIZE}px`;
+          canvas.style.height = `${gridHeight * CELL_SIZE}px`;
 
           frameCountRef.current = 0;
           lastSignalEmitTimeRef.current = 0;
@@ -1926,6 +1994,7 @@ const GOLSurvival = () => {
                    branchTendril.signalState = 'propagating';
                    branchTendril.signalPosition = approximateMatch + 1; // Start from next position
                    branchTendril.fractionalPos = approximateMatch + 1;
+                   branchTendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
 
                    // Check bounds for next position
                    if(branchTendril.signalPosition >= branchTendril.path.length) {
@@ -1949,6 +2018,7 @@ const GOLSurvival = () => {
               // Start signal propagation from the *next* cell in the branch path
               branchTendril.signalPosition = branchPointIndexInBranch + 1;
               branchTendril.fractionalPos = branchPointIndexInBranch + 1;
+              branchTendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
               // Ensure signal doesn't go out of bounds immediately
               if(branchTendril.signalPosition >= branchTendril.path.length) {
                  branchTendril.signalState = 'reached_tip'; // Mark as reached if branch is only 1 cell long past point
