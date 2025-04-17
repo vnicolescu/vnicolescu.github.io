@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
-const CELL_SIZE = 4;
+const CELL_SIZE = 12; // Increased cell size for bolder, retro-pixel look
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
 const DEFAULT_SIGNAL_FREQUENCY = 10.0; // Hz – baseline, slider mid
@@ -9,7 +9,7 @@ const DEFAULT_BRANCH_CHANCE = 0.10;
 const DEFAULT_PULSE_SPEED = 20.0; // Baseline (slider mid)
 const MAX_CELL_AGE = 1200; // Frames for full color/conductivity transition
 const MIN_CONDUCTIVITY = 0.8;
-const MAX_CONDUCTIVITY = 4.0;
+const MAX_CONDUCTIVITY = 12.0; // Increased conductivity range
 const PULSE_VISIBILITY = 2.0; // Brightness multiplier
 const PATH_INTEGRITY_CHECK_INTERVAL = 50; // Frames (less frequent)
 const SOURCE_REGENERATION_DELAY = 150; // Frames
@@ -29,11 +29,11 @@ const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsor
 // --- Colors ---
 const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
 const BACKGROUND_COLOR = '#0a0f1b'; // Deep blue‑black
-const OLD_TENDRIL_COLOR = '#44586e'; // Slate blue‑grey – established paths
-const YOUNG_TENDRIL_COLOR = '#c57038'; // Burnt orange – emergent / young growth
+const OLD_TENDRIL_COLOR = '#2e7ed3';  // Senescent blue
+const YOUNG_TENDRIL_COLOR = '#ff9c32'; // Leading edge orange
 const SIGNAL_COLOR = '#FFFFFF'; // White
 const FOOD_COLOR = '#10B981'; // Emerald Green
-const FADING_COLOR = '#4B5563'; // Gray for standard fade
+const FADING_COLOR = '#43678c'; // Dead blue for standard fade
 const REABSORBING_COLOR_START = '#1E3A8A'; // Start reabsorb from old color
 const REABSORBING_COLOR_END = '#F59E0B'; // Fade towards young color before disappearing
 
@@ -98,7 +98,7 @@ const interpolateColors = (color1Hex, color2Hex, t) => {
         // Interpolate RGB values
         const r = Math.round(r1 + (r2 - r1) * clampedT);
         const g = Math.round(g1 + (g2 - g1) * clampedT);
-        const b = Math.round(b1 + (b1 - b1) * clampedT);
+        const b = Math.round(b1 + (b2 - b1) * clampedT); // FIX: use b2
 
         // Convert back to hex with safety checks
         return `#${Math.max(0, Math.min(255, r)).toString(16).padStart(2, '0')}${
@@ -1468,7 +1468,7 @@ const GOLSurvival = () => {
            // Reset global alpha
            context.globalAlpha = 1.0;
 
-           // Draw signals
+           // Draw signals (with glow)
            context.fillStyle = SIGNAL_COLOR;
            tendrilsRef.current.forEach(tendril => {
                if (tendril && tendril.signalState === 'propagating' &&
@@ -1481,11 +1481,15 @@ const GOLSurvival = () => {
                        // Draw signal with enhanced visibility
                        const opacity = Math.min(1.0, (tendril.opacity || 1.0) * PULSE_VISIBILITY);
                        context.globalAlpha = opacity;
+                       context.shadowBlur = 10;
+                       context.shadowColor = '#FFFFFFAA';
                        context.fillRect(
                            signalCoord.x * CELL_SIZE,
                            signalCoord.y * CELL_SIZE,
                            CELL_SIZE, CELL_SIZE
                        );
+                       context.shadowBlur = 0;
+                       context.shadowColor = 'transparent';
                    }
                }
            });
@@ -1518,6 +1522,43 @@ const GOLSurvival = () => {
                    }
                });
            }
+
+           // === Grid Overlay (between active cells only) ===
+           context.globalAlpha = 1.0;
+           context.strokeStyle = BACKGROUND_COLOR;
+           context.lineWidth = 2;
+
+           // Draw vertical lines only between active cells
+           for (let gx = 1; gx < gridWidth; gx++) {
+               for (let gy = 0; gy < gridHeight; gy++) {
+                   const leftCell = gridRef.current[gy][gx - 1];
+                   const rightCell = gridRef.current[gy][gx];
+                   if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
+                       context.beginPath();
+                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
+                       context.lineTo(gx * CELL_SIZE, (gy + 1) * CELL_SIZE);
+                       context.stroke();
+                   }
+               }
+           }
+
+           // Draw horizontal lines only between active cells
+           for (let gy = 1; gy < gridHeight; gy++) {
+               for (let gx = 0; gx < gridWidth; gx++) {
+                   const topCell = gridRef.current[gy - 1][gx];
+                   const bottomCell = gridRef.current[gy][gx];
+                   if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
+                       context.beginPath();
+                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
+                       context.lineTo((gx + 1) * CELL_SIZE, gy * CELL_SIZE);
+                       context.stroke();
+                   }
+               }
+           }
+
+           // Reset strokeStyle in case other draws happen later
+           context.lineWidth = 1;
+           context.strokeStyle = '#000000';
        } catch (err) {
            console.error("Error in drawGridAndElements:", err);
        }
