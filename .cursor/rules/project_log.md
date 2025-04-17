@@ -50,3 +50,26 @@
     - Improved code comments and logging for future maintainability.
   - **Status:** Stable baseline for further enhancements (e.g., path optimization, environmental influences).
   - **Next:** Merge to main, consider milestone tag, and plan next feature set.
+
+- **[Date Placeholder - e.g., 2024-06-11]**: Refined Survival Mechanics & Debugging
+  - **Feature:** Enhanced resource reabsorption, collision handling, UI, and stability for `GOLSurvival.jsx`.
+  - **Achievements:**
+    - **Reabsorption:**
+      - Implemented tip-first cell removal for `reabsorbing` state, returning energy (`CELL_ENERGY_COST`) per cell.
+      - Added `BLOCKED_REABSORB_DELAY`: tendrils blocked for this duration transition to `reabsorbing`.
+      - Added `autoReabsorbCheck`: sources below `reabsorbThreshold` mark their tendrils for reabsorption.
+      - Energy bars now display a "+" indicator when the source is actively reabsorbing.
+    - **Collision & Alliance:**
+      - `handleTendrilCollision` now marks only the *moving* tendril as `fading` (allowing parent/siblings to continue).
+      - Initial `formAllianceBetweenSources` implemented: pools energy into one source, deactivates the other upon collision (simple merge, BFS path pruning pending).
+    - **UI & State:**
+      - Added `reabsorbThreshold` slider (0.05-0.5).
+      - Adjusted Pulse Speed slider range (5-60, default 20) and Signal Frequency (1-30, default 10).
+      - Added a Reset button.
+      - Fixed state update issues causing simulation resets when sliders were adjusted.
+      - Energy bars now show raw energy value alongside percentage.
+    - **Stability:**
+      - Resolved multiple `ReferenceError` issues related to function hoisting/declaration order and state variable access (`reabsorbThreshold`, `safeExecute`).
+      - Made `verifyPathIntegrity` non-fatal: tendrils failing checks are marked `reabsorbing` instead of triggering a cascade failure.
+  - **Status:** Simulation is more stable, reabsorption mechanics are active, basic alliance logic is in place. Spontaneous death issue seems resolved but needs monitoring.
+  - **Next:** Implement BFS/A* path pruning for alliances, consider midpoint source spawning, further debug any remaining stability or behavioural quirks.

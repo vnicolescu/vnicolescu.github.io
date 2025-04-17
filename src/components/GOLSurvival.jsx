@@ -4,9 +4,9 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 const CELL_SIZE = 4;
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
-const DEFAULT_SIGNAL_FREQUENCY = 1.0; // Hz
+const DEFAULT_SIGNAL_FREQUENCY = 10.0; // Hz – baseline, slider mid
 const DEFAULT_BRANCH_CHANCE = 0.10;
-const DEFAULT_PULSE_SPEED = 2.0; // Base cells per second
+const DEFAULT_PULSE_SPEED = 20.0; // Baseline (slider mid)
 const MAX_CELL_AGE = 1200; // Frames for full color/conductivity transition
 const MIN_CONDUCTIVITY = 0.8;
 const MAX_CONDUCTIVITY = 4.0;
@@ -16,19 +16,21 @@ const SOURCE_REGENERATION_DELAY = 150; // Frames
 const MIN_PATH_LENGTH_FOR_BRANCHING = 5;
 
 // --- NEW: Survival Mechanics Constants ---
-const INITIAL_SOURCE_ENERGY = 500; // Starting energy units per source
+const INITIAL_SOURCE_ENERGY = 8000; // Starting energy units per source (doubled again)
 const CELL_ENERGY_COST = 1; // Energy cost per cell grown/branched
 const FOOD_PELLET_SIZE = 4; // NxN size
 const FOOD_DENSITY = 0.0005; // Chance per cell per frame to spawn food
 const FOOD_ENERGY_PER_CELL = 50; // Energy gained per food cell consumed
 const REABSORPTION_FADE_SPEED = 0.005; // Faster fade for reabsorbed tendrils - SLOWED DOWN
 const STANDARD_FADE_SPEED = 0.002; // Slower fade for disconnected tendrils - SLOWED DOWN
+const REABSORB_STEP_INTERVAL = 3; // frames between removing tail cells during reabsorb
+const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsorbs
 
 // --- Colors ---
-const SOURCE_COLOR = '#6366F1'; // Indigo Flame
-const BACKGROUND_COLOR = '#000000';
-const OLD_TENDRIL_COLOR = '#1E3A8A'; // Navy Blue
-const YOUNG_TENDRIL_COLOR = '#F59E0B'; // Solar Amber
+const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
+const BACKGROUND_COLOR = '#0a0f1b'; // Deep blue‑black
+const OLD_TENDRIL_COLOR = '#44586e'; // Slate blue‑grey – established paths
+const YOUNG_TENDRIL_COLOR = '#c57038'; // Burnt orange – emergent / young growth
 const SIGNAL_COLOR = '#FFFFFF'; // White
 const FOOD_COLOR = '#10B981'; // Emerald Green
 const FADING_COLOR = '#4B5563'; // Gray for standard fade
@@ -134,14 +136,16 @@ const GOLSurvival = () => {
   const gridDimensions = useRef({ width: 0, height: 0 });
 
   // --- State for Simulation Parameters ---
-  const [signalFrequency, setSignalFrequency] = useState(5.0); // Default 5 Hz (was 1.5)
+  const [signalFrequency, setSignalFrequency] = useState(DEFAULT_SIGNAL_FREQUENCY);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
-  const [pulseSpeed, setPulseSpeed] = useState(10.0); // Default 10 cells/sec (was 7.0)
+  const [pulseSpeed, setPulseSpeed] = useState(DEFAULT_PULSE_SPEED);
   const [directionWeights, setDirectionWeights] = useState([
     0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
     0.1, 0, 0.1,    // Left, Center, Right
     0, 0, 0         // Backward-left, Backward, Backward-right
   ]);
+  // Threshold (0.05‑0.5) below which auto‑reabsorption triggers
+  const [reabsorbThreshold, setReabsorbThreshold] = useState(0.25);
   // Maybe add controls for energy cost, food density later
 
   // --- IMPORTANT: Function declarations for functions used in circular dependencies ---
@@ -242,45 +246,42 @@ const GOLSurvival = () => {
   };
 
   // Handle Tendril Collision - MUST BE DECLARED EARLY
-  const handleTendrilCollision = (tendril1, tendril2) => {
-    if (!tendril1 || !tendril2 || !gridRef.current) return;
+  const handleTendrilCollision = (movingTendril, staticTendril) => {
+    if (!movingTendril || !staticTendril || !gridRef.current) return;
 
-    if (tendril1.sourceId !== tendril2.sourceId) {
-      console.log(`%cCollision detected: Tendril ${tendril1.id} (Source ${tendril1.sourceId}) and Tendril ${tendril2.id} (Source ${tendril2.sourceId})`, 'color: yellow');
+    if (movingTendril.sourceId !== staticTendril.sourceId) {
+      console.log(`%cCollision: moving ${movingTendril.id} hit ${staticTendril.id}`,'color: yellow');
 
-      tendril1.state = 'blocked';
-      tendril2.state = 'blocked';
+      // Only the moving branch starts fading; contacted branch lives
+      movingTendril.state = 'fading';
 
-      const collisionPoint = tendril1.path && tendril1.path.length ?
-        tendril1.path[tendril1.path.length - 1] : null;
+      // Form alliance path
+      formAllianceBetweenSources(movingTendril.sourceId, staticTendril.sourceId, movingTendril.path[movingTendril.path.length-1]);
 
+      const collisionPoint = movingTendril.path[movingTendril.path.length - 1];
       if (collisionPoint && isWithinBounds(collisionPoint.x, collisionPoint.y)) {
-        const gridRow = gridRef.current[collisionPoint.y];
-        if (gridRow) {
-          const cell = gridRow[collisionPoint.x];
-          if (cell) {
-            cell.isConnectionPoint = true;
-          }
-        }
+        const cell = gridRef.current[collisionPoint.y][collisionPoint.x];
+        if (cell) cell.isConnectionPoint = true;
       }
     }
   };
 
   // Ref for current simulation parameters
-  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights });
+  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold });
   useEffect(() => {
-    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights };
-  }, [signalFrequency, branchChance, pulseSpeed, directionWeights]);
+    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold };
+  }, [signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold]);
 
   // --- Core Simulation Logic ---
 
   // Utility: Safe execution wrapper
   const safeExecute = useCallback((fn, context, ...args) => {
-    if (error) return null;
+    if (error || typeof fn !== 'function') return null;
     try {
       return fn.apply(context, args);
     } catch (e) {
-      console.error(`Simulation error in ${fn.name || 'anonymous function'}:`, e.message, e.stack);
+      const fnName = fn && fn.name ? fn.name : 'anonymous';
+      console.error(`Simulation error in ${fnName}:`, e.message, e.stack);
       setError(`Runtime Error: ${e.message}`);
       if (animationFrameIdRef.current) {
         window.cancelAnimationFrame(animationFrameIdRef.current);
@@ -1230,7 +1231,8 @@ const GOLSurvival = () => {
                            // Check if tendril path starts at source
                            const firstPoint = tendril.path[0];
                            if (!firstPoint || firstPoint.x !== source.x || firstPoint.y !== source.y) {
-                               tendril.state = 'fading';
+                               console.warn(`Integrity fail: root ${tendril.id} lost origin (src ${source.id}). Marking reabsorbing.`);
+                               tendril.state = 'reabsorbing';
                                markedThisPass++;
                                changed = true;
                            }
@@ -1496,7 +1498,11 @@ const GOLSurvival = () => {
                            context.fillStyle = '#6B7280'; // Gray
                        }
 
-                       context.fillText(energyText, 10, 20 + index * 15);
+                       const textY = 20 + index * 20;
+                       const raw = Math.floor(source.energy);
+                       context.fillText(`${energyText} (${raw})`, 10, textY);
+
+                       // bar drawing remains...
                    }
                });
            }
@@ -1696,8 +1702,8 @@ const GOLSurvival = () => {
       console.log("GOLSurvival component mounted.");
       if (initializeSimulation()) {
           console.log("Starting animation loop.");
-           // Start initial signal emit slightly delayed to allow drawing first frame?
-           setTimeout(() => safeExecute(null, emitSignal), 50);
+           // Emit first signals slightly after init
+           setTimeout(() => emitSignal(), 50);
           animationFrameIdRef.current = window.requestAnimationFrame(render);
       } else {
           console.error("Initialization failed, animation loop not started.");
@@ -1712,7 +1718,7 @@ const GOLSurvival = () => {
           }
           if (initializeSimulation()) {
               console.log("Restarting animation loop after resize.");
-               setTimeout(() => safeExecute(null, emitSignal), 50);
+               setTimeout(() => emitSignal(), 50);
               animationFrameIdRef.current = window.requestAnimationFrame(render);
           } else {
               console.error("Re-initialization after resize failed.");
@@ -1733,7 +1739,7 @@ const GOLSurvival = () => {
           foodPelletsRef.current = [];
           connectionsRef.current = [];
       };
-  }, [initializeSimulation, render, safeExecute, emitSignal]); // Add dependencies
+  }, [initializeSimulation, render, emitSignal]); // Add dependencies
 
 
   // --- UI Handler ---
@@ -1858,7 +1864,7 @@ const GOLSurvival = () => {
               setError(null); // Clear error
               // Attempt re-initialization - might need full reload depending on error
               if (initializeSimulation()) {
-                 setTimeout(() => safeExecute(null, emitSignal), 50);
+                 setTimeout(() => emitSignal(), 50);
                  animationFrameIdRef.current = window.requestAnimationFrame(render);
               }
             }}
@@ -1882,12 +1888,12 @@ const GOLSurvival = () => {
            <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48 shadow-lg">
                 <div className="flex items-center justify-between">
                    <label htmlFor="signalFrequency" className="flex-1 mr-1">Signal Freq:</label>
-                   <input type="range" id="signalFrequency" min="1.0" max="10.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
+                   <input type="range" id="signalFrequency" min="1" max="30" step="0.5" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-24 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
                    <span className="w-8 text-right ml-1">{signalFrequency.toFixed(1)} Hz</span>
                  </div>
                  <div className="flex items-center justify-between">
                    <label htmlFor="pulseSpeed" className="flex-1 mr-1">Pulse Speed:</label>
-                   <input type="range" id="pulseSpeed" min="5.0" max="20.0" step="0.5" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
+                   <input type="range" id="pulseSpeed" min="5" max="60" step="1" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-24 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
                    <span className="w-8 text-right ml-1">{pulseSpeed.toFixed(1)}</span>
                  </div>
                  <div className="flex items-center justify-between">
