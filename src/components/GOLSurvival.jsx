@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
 const CELL_SIZE = 12; // Increased cell size for bolder, retro-pixel look
-const GROWTH_FACTOR = 1; // Cells advanced per pulse at each active tip
+const DEFAULT_GROWTH_FACTOR = 1; // Default cells advanced per pulse at each active tip
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
 const DEFAULT_SIGNAL_FREQUENCY = 10.0; // Hz – baseline, slider mid
@@ -140,6 +140,7 @@ const GOLSurvival = () => {
   const [signalFrequency, setSignalFrequency] = useState(DEFAULT_SIGNAL_FREQUENCY);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
   const [pulseSpeed, setPulseSpeed] = useState(DEFAULT_PULSE_SPEED);
+  const [growthFactor, setGrowthFactor] = useState(DEFAULT_GROWTH_FACTOR);
   const [directionWeights, setDirectionWeights] = useState([
     0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
     0.1, 0, 0.1,    // Left, Center, Right
@@ -268,10 +269,10 @@ const GOLSurvival = () => {
   };
 
   // Ref for current simulation parameters
-  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold });
+  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor });
   useEffect(() => {
-    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold };
-  }, [signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold]);
+    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor };
+  }, [signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor]);
 
   // --- Core Simulation Logic ---
 
@@ -558,14 +559,14 @@ const GOLSurvival = () => {
                   tendril.signalState = 'propagating';
                   tendril.signalPosition = 0;
                   tendril.fractionalPos = 0;
-                  tendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
+                  tendril.growthRemaining = growthFactor; // reset growth quota for this pulse
                   emittedCount++;
               }
           });
       });
       // if (emittedCount > 0) console.log(`  Emitted ${emittedCount} signals.`);
 
-  }, []); // Dependencies: getSourceById? Maybe not needed if sourcesRef is up-to-date
+  }, [growthFactor]); // Dependencies: getSourceById? Maybe not needed if sourcesRef is up-to-date
 
   const propagateSignal = useCallback((deltaTime) => {
       const newlyReachedTips = new Set();
@@ -665,7 +666,7 @@ const GOLSurvival = () => {
       });
 
       return newlyReachedTips;
-  }, [isWithinBounds, getTendrilById, getSourceById, tryGrowTendril, attemptBranching]);
+  }, [isWithinBounds, getTendrilById, getSourceById, tryGrowTendril, attemptBranching, growthFactor]);
 
   // New helper function to check for branch points
   const checkForBranchPoints = (tendril, startPos, endPos) => {
@@ -717,7 +718,7 @@ const GOLSurvival = () => {
           }
 
           // --- Growth Loop controlled by GROWTH_FACTOR ---
-          for (let step = 0; step < GROWTH_FACTOR; step++) {
+          for (let step = 0; step < growthFactor; step++) {
               const grew = tryGrowTendril(tendril, source);
 
               if (!grew) {
@@ -737,11 +738,10 @@ const GOLSurvival = () => {
           }
 
           // After completing growthFactor steps (or blocking), stop the pulse until the next emission
-          tendril.signalState = 'idle';
-          tendril.signalPosition = -1;
-          tendril.fractionalPos = -1;
+          // NOTE: We no longer force‑reset the pulse to 'idle' here so that the next frame can
+          // create a temporary visual lead.
       });
-  }, [getTendrilById, getSourceById /* Add tryGrowTendril, attemptBranching dependencies later */]);
+  }, [getTendrilById, getSourceById, growthFactor]);
 
   // Helper: Get Neighbors (adapted for survival)
   const getNeighbors = (x, y, currentSourceId) => {
@@ -1994,7 +1994,7 @@ const GOLSurvival = () => {
                    branchTendril.signalState = 'propagating';
                    branchTendril.signalPosition = approximateMatch + 1; // Start from next position
                    branchTendril.fractionalPos = approximateMatch + 1;
-                   branchTendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
+                   branchTendril.growthRemaining = growthFactor; // reset growth quota
 
                    // Check bounds for next position
                    if(branchTendril.signalPosition >= branchTendril.path.length) {
@@ -2018,7 +2018,7 @@ const GOLSurvival = () => {
               // Start signal propagation from the *next* cell in the branch path
               branchTendril.signalPosition = branchPointIndexInBranch + 1;
               branchTendril.fractionalPos = branchPointIndexInBranch + 1;
-              branchTendril.growthRemaining = GROWTH_FACTOR; // NEW: reset growth quota for this pulse
+              branchTendril.growthRemaining = growthFactor; // reset growth quota
               // Ensure signal doesn't go out of bounds immediately
               if(branchTendril.signalPosition >= branchTendril.path.length) {
                  branchTendril.signalState = 'reached_tip'; // Mark as reached if branch is only 1 cell long past point
@@ -2030,7 +2030,7 @@ const GOLSurvival = () => {
               }
           }
       });
-  }, [getTendrilById]); // Depends on getTendrilById
+  }, [getTendrilById, growthFactor]); // Depends on getTendrilById
 
   // --- Alliance / Source merge ---
   const formAllianceBetweenSources = useCallback((srcIdA, srcIdB, connectionPoint) => {
@@ -2108,6 +2108,11 @@ const GOLSurvival = () => {
                    <label htmlFor="branch" className="flex-1 mr-1">Branch %:</label>
                    <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
                    <span className="w-8 text-right ml-1">{(branchChance * 100).toFixed(0)}%</span>
+                 </div>
+                 <div className="flex items-center justify-between">
+                   <label htmlFor="growthFactor" className="flex-1 mr-1">Growth:</label>
+                   <input type="range" id="growthFactor" min="1" max="10" step="1" value={growthFactor} onChange={(e) => setGrowthFactor(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
+                   <span className="w-8 text-right ml-1">{growthFactor}</span>
                  </div>
                 {/* Removed Fade Speed slider - now have standard/reabsorbing */}
            </div>
