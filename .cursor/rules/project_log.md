@@ -100,3 +100,11 @@
     - Increased `FOOD_ENERGY_PER_CELL` to 200.
   - **Status:** Simulation runs longer without freezing. Reabsorption is active. Basic alliance prevents instant death but needs refinement (path pruning, potential new source).
   - **Next:** Refine alliance mechanism (path optimization, shared growth point), potentially implement periodic "wake-up" checks for blocked tendrils, monitor stability.
+
+- **2024-06-12**: Visual Update – Background & Grid Color
+  - **Feature:** Updated simulation background and grid overlay color to `#060C14` for improved visual clarity and aesthetic alignment.
+  - **Achievements:**
+    - Changed `BACKGROUND_COLOR` constant to `#060C14`.
+    - Updated grid overlay lines to use the same color.
+    - Main container now uses the new background color via inline style.
+  - **Status:** Visual baseline improved. Ready for further color and style enhancements.

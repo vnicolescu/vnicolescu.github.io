@@ -28,7 +28,7 @@ const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsor
 
 // --- Colors ---
 const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
-const BACKGROUND_COLOR = '#0a0f1b'; // Deep blue‑black
+const BACKGROUND_COLOR = '#060C14'; // Deep blue‑black (updated)
 const OLD_TENDRIL_COLOR = '#2e7ed3';  // Senescent blue
 const YOUNG_TENDRIL_COLOR = '#ff9c32'; // Leading edge orange
 const SIGNAL_COLOR = '#FFFFFF'; // White
@@ -1525,8 +1525,8 @@ const GOLSurvival = () => {
 
            // === Grid Overlay (between active cells only) ===
            context.globalAlpha = 1.0;
-           context.strokeStyle = BACKGROUND_COLOR;
-           context.lineWidth = 2;
+           context.strokeStyle = '#060C14'; // Updated grid color
+           context.lineWidth = 2 * 0.75; // Will update thickness in next step
 
            // Draw vertical lines only between active cells
            for (let gx = 1; gx < gridWidth; gx++) {
@@ -1969,7 +1969,7 @@ const GOLSurvival = () => {
 
   // --- JSX Return ---
   return (
-    <div className="relative w-full h-screen bg-black flex flex-col items-center justify-center p-5">
+    <div className="relative w-full h-screen flex flex-col items-center justify-center p-5" style={{ backgroundColor: '#060C14' }}>
       {error && (
         <div className="absolute top-4 left-4 right-4 bg-red-800 text-white p-3 rounded shadow-lg z-50 max-w-md mx-auto">
           <p className="font-bold mb-1">Simulation Error</p>
