@@ -20,7 +20,7 @@ const INITIAL_SOURCE_ENERGY = 8000; // Starting energy units per source (doubled
 const CELL_ENERGY_COST = 1; // Energy cost per cell grown/branched
 const FOOD_PELLET_SIZE = 4; // NxN size
 const FOOD_DENSITY = 0.0005; // Chance per cell per frame to spawn food
-const FOOD_ENERGY_PER_CELL = 50; // Energy gained per food cell consumed
+const FOOD_ENERGY_PER_CELL = 200; // Energy gained per food cell consumed – increased for more meaningful boost
 const REABSORPTION_FADE_SPEED = 0.005; // Faster fade for reabsorbed tendrils - SLOWED DOWN
 const STANDARD_FADE_SPEED = 0.002; // Slower fade for disconnected tendrils - SLOWED DOWN
 const REABSORB_STEP_INTERVAL = 3; // frames between removing tail cells during reabsorb
@@ -391,6 +391,7 @@ const GOLSurvival = () => {
               opacity: 1,
               isBranch: false,
               parentId: null,
+              blockedFrame: null, // Track when it became blocked
               creationFrame: frameCountRef.current,
           };
           tendrilsRef.current.set(tendrilId, newTendril);
@@ -548,7 +549,7 @@ const GOLSurvival = () => {
                   tendril.path.length > 0 && // Check path exists (redundant but safe)
                   tendril.path[0].x === source.x &&
                   tendril.path[0].y === source.y &&
-                  (tendril.state === 'growing' || tendril.state === 'connected') && // Can propagate if growing or stable
+                  (tendril.state === 'growing' || tendril.state === 'connected' || tendril.state === 'blocked') && // Can propagate if growing or stable
                   tendril.signalState === 'idle')
               {
                   // console.log(`  Emitting for Tendril ${tendril.id} from Source ${source.id}`);
@@ -845,7 +846,6 @@ const GOLSurvival = () => {
 
       if (validEmptyNeighbors.length === 0) {
           tendril.state = 'blocked'; // No valid empty space
-          // console.log(`Tendril ${tendril.id} blocked - no valid empty neighbors.`);
           return false;
       }
 
@@ -892,19 +892,20 @@ const GOLSurvival = () => {
       // Filter out neighbors that pose a high collision risk (adjacent to self)
       const safeWeightedNeighbors = weightedNeighbors.filter(option => !isCollisionRisky(option.item));
 
-      if (safeWeightedNeighbors.length === 0) {
-          // If only risky neighbors are left, maybe pick one anyway or block?
-          // For now, let's block if only risky options remain.
-          // console.log(`Tendril ${tendril.id} blocked - only risky neighbors available.`);
-          tendril.state = 'blocked';
-          return false;
-          // Alternative: const nextCell = weightedRandomSelect(weightedNeighbors); // Pick from original list
+      // NEW: Fallback strategies to reduce premature blocking
+      let nextCell = null;
+      if (safeWeightedNeighbors.length > 0) {
+          nextCell = weightedRandomSelect(safeWeightedNeighbors);
+      } else if (weightedNeighbors.length > 0) {
+          // All options were risky, but still allow movement to avoid dead‑ends
+          nextCell = weightedRandomSelect(weightedNeighbors);
+      } else {
+          // No weighted neighbors (all weights zero) – choose any valid empty neighbor randomly
+          nextCell = validEmptyNeighbors[getRandomInt(validEmptyNeighbors.length)];
       }
 
-      const nextCell = weightedRandomSelect(safeWeightedNeighbors);
       if (!nextCell) {
           tendril.state = 'blocked'; // Selection failed
-          // console.log(`Tendril ${tendril.id} blocked - weighted selection failed.`);
           return false;
       }
 
@@ -1066,6 +1067,17 @@ const GOLSurvival = () => {
       if (debugFadingFull && (fadingCount > 0 || reabsorbingCount > 0)) {
           console.log(`%cFADING STATUS: ${fadingCount} fading, ${reabsorbingCount} reabsorbing tendrils`, 'color: purple');
       }
+
+      // NEW: convert long‑blocked branches to reabsorbing
+      tendrilsRef.current.forEach(t => {
+          if (t.state === 'blocked' && t.isBranch && t.blockedFrame !== null) {
+              const blockedDuration = frameCountRef.current - t.blockedFrame;
+              if (blockedDuration >= BLOCKED_REABSORB_DELAY) {
+                  t.state = 'reabsorbing';
+                  console.log(`%cBranch ${t.id} has been blocked for ${blockedDuration} frames – now reabsorbing`, 'color: purple');
+              }
+          }
+      });
 
       tendrilsRef.current.forEach((tendril, tendrilId) => {
           if (tendril.state === 'fading' || tendril.state === 'reabsorbing') {
@@ -1790,21 +1802,41 @@ const GOLSurvival = () => {
           return;
       }
 
-      const allTendrilIds = branchCell.tendrilId.split(',');
-      console.log(`Propagating signal at branch point (${branchPoint.x},${branchPoint.y}). IDs: ${allTendrilIds.join(',')}`);
+      const allTendrilIds = branchCell.tendrilId.split(',').filter(Boolean); // Ensure empty strings aren't processed
+      // console.log(`Propagating signal at branch point (${branchPoint.x},${branchPoint.y}). IDs: ${allTendrilIds.join(',')}`); // Original log
+
+      // --- DETAILED LOGGING START ---
+      if (allTendrilIds.length > 1) { // Only log for actual branch points
+          console.log(`%c>>> Branch Point Check (${branchPoint.x},${branchPoint.y}) - Origin: ${originTendril.id}, Cell IDs: [${allTendrilIds.join(', ')}]`, 'color: cyan');
+      }
+      // --- DETAILED LOGGING END ---
+
 
       allTendrilIds.forEach(branchTendrilId => {
           // Skip propagating back to the tendril the signal came from
-          if (branchTendrilId === originTendril.id) return;
-
-          const branchTendril = getTendrilById(branchTendrilId);
-          if (!branchTendril) {
-              console.warn(`Branch tendril ${branchTendrilId} not found during signal propagation.`);
+          if (branchTendrilId === originTendril.id) {
+               // --- DETAILED LOGGING ---
+               // console.log(`%c  -> Skipping ${branchTendrilId}: Is origin tendril.`, 'color: gray');
+               // --- DETAILED LOGGING END ---
               return;
           }
 
-          // Only propagate to active, idle tendrils
-          if (branchTendril.signalState !== 'idle' || (branchTendril.state !== 'growing' && branchTendril.state !== 'connected')) {
+          const branchTendril = getTendrilById(branchTendrilId);
+          if (!branchTendril) {
+              // --- DETAILED LOGGING ---
+              console.warn(`%c  -> Skipping ${branchTendrilId}: Tendril not found.`, 'color: red');
+              // --- DETAILED LOGGING END ---
+              return;
+          }
+
+          // Only propagate to active, idle tendrils that can grow or are connected/blocked roots allowing pass-through
+           const canPropagateState = branchTendril.state === 'growing' || branchTendril.state === 'connected' || (branchTendril.state === 'blocked' && !branchTendril.isBranch); // Allow blocked roots
+          if (branchTendril.signalState !== 'idle' || !canPropagateState) {
+              // --- DETAILED LOGGING ---
+               if (allTendrilIds.length > 1) { // Reduce noise, only log skips for actual branches
+                   console.log(`%c  -> Skipping ${branchTendrilId}: Signal State='${branchTendril.signalState}', Tendril State='${branchTendril.state}' (Needs idle & growing/connected/blocked-root)`, 'color: orange');
+               }
+               // --- DETAILED LOGGING END ---
               return;
           }
 
@@ -1815,15 +1847,19 @@ const GOLSurvival = () => {
           );
 
           if (branchPointIndexInBranch === -1) {
-               console.warn(`Branch point (${branchPoint.x}, ${branchPoint.y}) not found in path of branch ${branchTendril.id}. Cannot propagate signal.`);
+               // --- DETAILED LOGGING ---
+               console.warn(`%c  -> Skipping ${branchTendrilId}: Branch point (${branchPoint.x}, ${branchPoint.y}) not found in its path.`, 'color: red');
+               // --- DETAILED LOGGING END ---
 
-               // Try approximate matching for greater resilience
+               // Try approximate matching for greater resilience (Keep this)
                const approximateMatch = branchTendril.path.findIndex(p =>
                    Math.abs(p.x - branchPoint.x) <= 1 && Math.abs(p.y - branchPoint.y) <= 1
                );
 
                if (approximateMatch !== -1) {
-                   console.log(`Found approximate match for branch point at position ${approximateMatch} in branch ${branchTendril.id}`);
+                   // --- DETAILED LOGGING ---
+                    console.log(`%c  -> PROPAGATING (Approx Match) to ${branchTendrilId} at index ${approximateMatch + 1}`, 'color: green; font-weight: bold');
+                   // --- DETAILED LOGGING END ---
                    branchTendril.signalState = 'propagating';
                    branchTendril.signalPosition = approximateMatch + 1; // Start from next position
                    branchTendril.fractionalPos = approximateMatch + 1;
@@ -1833,10 +1869,19 @@ const GOLSurvival = () => {
                       branchTendril.signalState = 'reached_tip';
                       branchTendril.signalPosition = branchTendril.path.length - 1;
                       branchTendril.fractionalPos = branchTendril.path.length - 1;
+                       // --- DETAILED LOGGING ---
+                       console.log(`%c     -> Branch ${branchTendrilId} immediately reached tip (approx match).`, 'color: green');
+                       // --- DETAILED LOGGING END ---
                    }
+               } else {
+                   // --- DETAILED LOGGING ---
+                    console.warn(`%c  -> Skipping ${branchTendrilId}: Approx match failed too.`, 'color: red');
+                    // --- DETAILED LOGGING END ---
                }
           } else {
-              console.log(`  -> Propagating signal to branch ${branchTendril.id} starting at index ${branchPointIndexInBranch}`);
+              // --- DETAILED LOGGING ---
+               console.log(`%c  -> PROPAGATING (Exact Match) to ${branchTendrilId} starting at index ${branchPointIndexInBranch + 1}`, 'color: green; font-weight: bold');
+               // --- DETAILED LOGGING END ---
               branchTendril.signalState = 'propagating';
               // Start signal propagation from the *next* cell in the branch path
               branchTendril.signalPosition = branchPointIndexInBranch + 1;
@@ -1846,10 +1891,40 @@ const GOLSurvival = () => {
                  branchTendril.signalState = 'reached_tip'; // Mark as reached if branch is only 1 cell long past point
                  branchTendril.signalPosition = branchTendril.path.length - 1;
                  branchTendril.fractionalPos = branchTendril.path.length - 1;
+                  // --- DETAILED LOGGING ---
+                  console.log(`%c     -> Branch ${branchTendrilId} immediately reached tip (exact match).`, 'color: green');
+                   // --- DETAILED LOGGING END ---
               }
           }
       });
   }, [getTendrilById]); // Depends on getTendrilById
+
+  // --- Alliance / Source merge ---
+  const formAllianceBetweenSources = useCallback((srcIdA, srcIdB, connectionPoint) => {
+      if (!srcIdA || !srcIdB || srcIdA === srcIdB) return;
+      const sourceA = getSourceById(srcIdA);
+      const sourceB = getSourceById(srcIdB);
+      if (!sourceA || !sourceB) return;
+
+      // Choose survivor: keep the one with higher energy (arbitrary rule)
+      const primary = sourceA.energy >= sourceB.energy ? sourceA : sourceB;
+      const secondary = primary === sourceA ? sourceB : sourceA;
+
+      primary.energy += secondary.energy; // Merge energy pools
+      secondary.energy = 0;
+      secondary.isActive = false;
+      secondary.state = 'inactive';
+
+      console.log(`%cAlliance formed: ${primary.id} absorbs ${secondary.id}. Combined energy ${primary.energy.toFixed(0)}.`, 'color: cyan; font-weight:bold');
+
+      // Optionally mark the connection point as an auxiliary source for visuals
+      if (connectionPoint && isWithinBounds(connectionPoint.x, connectionPoint.y)) {
+          const cell = gridRef.current[connectionPoint.y][connectionPoint.x];
+          if (cell) {
+              cell.isConnectionPoint = true;
+          }
+      }
+  }, [getSourceById, isWithinBounds]);
 
   // --- JSX Return ---
   return (

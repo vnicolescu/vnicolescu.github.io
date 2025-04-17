@@ -73,3 +73,30 @@
       - Made `verifyPathIntegrity` non-fatal: tendrils failing checks are marked `reabsorbing` instead of triggering a cascade failure.
   - **Status:** Simulation is more stable, reabsorption mechanics are active, basic alliance logic is in place. Spontaneous death issue seems resolved but needs monitoring.
   - **Next:** Implement BFS/A* path pruning for alliances, consider midpoint source spawning, further debug any remaining stability or behavioural quirks.
+
+- **[Date Placeholder - e.g., 2024-06-11]**: Spontaneous Death Debugging Summary
+  - **Issue:** Entire simulation colony occasionally stops growing and fades prematurely, despite high source energy.
+  - **Potential Causes:**
+    1.  **`verifyPathIntegrity` False Positives:** Logic might incorrectly flag root tendrils as disconnected from source, triggering reabsorption cascade (primary suspect).
+    2.  **Accidental Source Deactivation:** Unintended state changes setting `source.isActive` to `false`.
+    3.  **State Corruption:** Residual bugs from initialization, resize, or state updates leading to invalid grid/tendril data.
+    4.  **Growth Blocking:** Overly restrictive `tryGrowTendril` logic trapping all tendrils.
+  - **Troubleshooting Status:**
+    - `verifyPathIntegrity` modified to be non-fatal (marks `reabsorbing`, logs specific error) - **Issue persists**.
+    - Fixed state initialization/update errors (`safeExecute`, `reabsorbThreshold`, hoisting) - **Issue persists**.
+    - Growth logic made less restrictive - **Issue persists**.
+    - Increased energy, added UI feedback (raw energy, '+' indicator) - Helps visibility, doesn't solve root cause.
+  - **Next Steps:** Start fresh debugging session focused on:
+    1.  Adding targeted logging within `verifyPathIntegrity` to capture source/root tendril states *just before* the failure check.
+    2.  Confirming if the failure warning (`Integrity fail: root...`) appears in console before death.
+    3.  Analyzing the exact mechanism causing the root tendril's `path[0]` to mismatch the source coordinates.
+
+- **[Date Placeholder - e.g., 2024-06-12]**: Senescence Fix, Reabsorption & Alliance V1
+  - **Feature:** Resolved colony senescence, implemented timed reabsorption, basic alliance merge, and food boost for `GOLSurvival.jsx`.
+  - **Achievements:**
+    - Fixed senescence by allowing signals to propagate through `blocked` tendrils (except fading/reabsorbing), keeping the network active.
+    - Implemented `blockedFrame` tracking: branches `blocked` for `BLOCKED_REABSORB_DELAY` now transition to `reabsorbing`.
+    - Implemented basic `formAllianceBetweenSources`: on collision, the higher-energy source absorbs the lower-energy one, merging energy pools.
+    - Increased `FOOD_ENERGY_PER_CELL` to 200.
+  - **Status:** Simulation runs longer without freezing. Reabsorption is active. Basic alliance prevents instant death but needs refinement (path pruning, potential new source).
+  - **Next:** Refine alliance mechanism (path optimization, shared growth point), potentially implement periodic "wake-up" checks for blocked tendrils, monitor stability.
