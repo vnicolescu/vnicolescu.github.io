@@ -181,23 +181,25 @@ const GOLSurvival = () => {
   // These need to be declared before they're used
 
   // Get Tendril by ID (O(1) lookup) - MUST BE DECLARED EARLY
-  const getTendrilById = (id) => {
+  // Memoized with empty deps so the identity is stable across renders. Otherwise
+  // every state change (e.g., grid toggle) cascades through every useCallback
+  // that lists this in its deps, regenerating `render`, which triggers the mount
+  // useEffect's cleanup → full simulation restart.
+  const getTendrilById = useCallback((id) => {
     if (!id) return null;
     return tendrilsRef.current && tendrilsRef.current.get ? tendrilsRef.current.get(id) : null;
-  };
+  }, []);
 
-  // Get Source by ID - MUST BE DECLARED EARLY
-  const getSourceById = (id) => {
+  const getSourceById = useCallback((id) => {
     if (!id) return null;
     return sourcesRef.current && Array.isArray(sourcesRef.current) ?
       sourcesRef.current.find(s => s && s.id === id) : null;
-  };
+  }, []);
 
-  // Check bounds - MUST BE DECLARED EARLY
-  const isWithinBounds = (x, y) => {
+  const isWithinBounds = useCallback((x, y) => {
     const dims = gridDimensions.current || { width: 0, height: 0 };
     return x >= 0 && x < dims.width && y >= 0 && y < dims.height;
-  };
+  }, []);
 
   // Handle Food Collision - MUST BE DECLARED EARLY
   const handleFoodCollision = (tendril, foodCellCoord) => {
@@ -2363,13 +2365,16 @@ const GOLSurvival = () => {
       phaseRef.current = 'blooming';
       phaseStartFrameRef.current = frameCountRef.current;
 
-      // Wipe the grid so the bloom paints on a clean canvas.
+      // Wipe tendril + source cells, but PRESERVE food. Food pellets are part of
+      // the world's resource layer, not the colony's biomass — they persist through
+      // the bloom and the new colonies inherit them.
       const dims = gridDimensions.current;
       for (let y = 0; y < dims.height; y++) {
           if (!gridRef.current[y]) continue;
           for (let x = 0; x < dims.width; x++) {
               const c = gridRef.current[y][x];
               if (!c) continue;
+              if (c.type === 'food') continue; // preserve food
               c.type = 'empty';
               c.color = BACKGROUND_COLOR;
               c.tendrilId = null;
@@ -2383,7 +2388,7 @@ const GOLSurvival = () => {
       }
       tendrilsRef.current.clear();
       sourcesRef.current = [];
-      foodPelletsRef.current = [];
+      // foodPelletsRef left intact — pellets carry over to the next colonies.
   }, []);
 
   const enterSporulationPhase = useCallback(() => {
