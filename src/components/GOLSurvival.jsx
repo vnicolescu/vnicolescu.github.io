@@ -715,7 +715,12 @@ const GOLSurvival = () => {
       });
 
       return newlyReachedTips;
-  }, [isWithinBounds, getTendrilById, getSourceById, tryGrowTendril, attemptBranching, growthFactor]);
+  // tryGrowTendril and attemptBranching are plain function declarations (not memoized)
+  // and would give propagateSignal a fresh identity every render — cascading to render
+  // and triggering a full simulation restart on any state change. Reach them via closure
+  // at call time (their bodies only read refs, so closure resolution is safe).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWithinBounds, getTendrilById, getSourceById, growthFactor]);
 
   // New helper function to check for branch points
   const checkForBranchPoints = (tendril, startPos, endPos) => {
