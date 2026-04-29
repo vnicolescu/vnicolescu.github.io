@@ -33,8 +33,11 @@ const RETRACTION_FRAMES = 200;              // slower implosion — reads as rec
 const BLOOM_DURATION_FRAMES = 220;          // ~3.7s for the spiral flower to grow + pulsate
 const SPORE_TRAVEL_FRAMES = 100;            // ~1.7s for spores to fly out and land
 const SPORE_DISTANCE_FRACTION = 0.32;       // fraction of min(grid dim) the spores travel
-const BLOOM_SPIRAL_TURNS = 3.25;            // number of revolutions in the spiral flower
-const BLOOM_RADIUS_FRACTION = 0.42;         // flower radius as fraction of min(grid dim)
+const BLOOM_SPIRAL_ARMS = 3;                // number of spiral arms — rosette symmetry
+const BLOOM_SPIRAL_TURNS = 1.5;             // revolutions per arm — tighter, more flower-like
+const BLOOM_RADIUS_FRACTION = 0.21;         // flower radius as fraction of min(grid dim) — compact
+const BLOOM_INFLORESCENCE_STEP = Math.PI;   // angular spacing between perpendicular petals along each arm
+const BLOOM_INFLORESCENCE_LEN = 2;          // uniform petal length on each side of the spiral
 
 // --- Colors ---
 const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
@@ -2466,18 +2469,17 @@ const GOLSurvival = () => {
 
           if (phase === 'blooming') {
               const t = Math.min(elapsed / BLOOM_DURATION_FRAMES, 1);
-              if (t < 0.55) {
-                  // Spiral grows outward — head pulse traces it, gradient fills behind.
-                  drawProgress = t / 0.55;
+              if (t < 0.70) {
+                  // Spiral grows outward slowly. Per-arm staggering + per-cell jitter
+                  // applied below — drawProgress is the global progress envelope.
+                  drawProgress = t / 0.70;
                   includeHead = true;
-              } else if (t < 0.85) {
-                  // Fully bloomed — gentle pulsation.
+              } else if (t < 0.90) {
                   drawProgress = 1;
-                  pulsation = 0.92 + 0.08 * Math.sin((t - 0.55) * Math.PI * 5);
+                  pulsation = 0.92 + 0.08 * Math.sin((t - 0.70) * Math.PI * 5);
               } else {
-                  // Pre-fade — slight dimming as the bloom prepares to launch spores.
                   drawProgress = 1;
-                  flowerAlpha = 1 - (t - 0.85) / 0.15 * 0.25;
+                  flowerAlpha = 1 - (t - 0.90) / 0.10 * 0.25;
               }
           } else {
               // Sporulating: the flower is being consumed. Fade quickly from outside in.
@@ -2486,85 +2488,112 @@ const GOLSurvival = () => {
               flowerAlpha = Math.max(0, 1 - t * 1.3);
           }
 
-          // Trace the spiral as discrete grid cells. Sample density is set so each
-          // cell along the path gets painted at least once (sample step ~0.5 cell).
-          const samples = 720;
-          const drawnSamples = Math.max(0, Math.floor(samples * drawProgress));
-          const painted = new Set();
+          // Multi-arm rosette: BLOOM_SPIRAL_ARMS spirals share a center and unfurl
+          // simultaneously, equally spaced around the circle. Each arm gets organic
+          // noise displacement (sub-cell) so the wrapping doesn't read as mechanical.
+          const armAngleStep = (2 * Math.PI) / BLOOM_SPIRAL_ARMS;
+          const samplesPerArm = 360;
+          const drawnSamples = Math.max(0, Math.floor(samplesPerArm * drawProgress));
+          const inflorescenceCount = Math.floor(totalTheta / BLOOM_INFLORESCENCE_STEP);
 
-          for (let i = 0; i <= drawnSamples; i++) {
-              const sampleT = i / samples;
-              const theta = sampleT * totalTheta;
-              const r = sampleT * maxRadius;
-              const sx = cx + r * Math.cos(theta);
-              const sy = cy + r * Math.sin(theta);
-              const gx = Math.round(sx);
-              const gy = Math.round(sy);
-              if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) continue;
-              const key = gx * 4096 + gy;
-              if (painted.has(key)) continue;
-              painted.add(key);
+          // Continuous noise (fract-sin) — same family as cellHash01 but on floats.
+          // Returns [0, 1). Used to perturb spiral path, appearance timing, and petals.
+          const noise01 = (a, b) => {
+              const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+              return v - Math.floor(v);
+          };
+          const SPIRAL_WOBBLE = 0.85; // cells of perpendicular wobble on the path
+          const SPIRAL_WOBBLE_FREQ = 1.3; // ripples per radian — slow undulations
+          const ARM_DELAYS = [0, 0.06, 0.11]; // each arm starts at a slightly different time
+          const APPEAR_JITTER = 0.05; // ±2.5% spread on per-cell appearance time
+          const FADE_IN_WINDOW = 0.04; // cells fade in over this drawProgress window once they appear
 
-              // Color: sunset gradient — gold center → magenta tips.
-              // Slight head-boost (brighter near the leading edge of the trace).
-              const distFromHead = drawProgress - sampleT;
-              const headBoost = includeHead ? Math.exp(-distFromHead * 18) : 0;
-              const baseAlpha = (0.85 + headBoost * 0.15) * pulsation * flowerAlpha;
-              paintCell(gx, gy, sunsetColor(sampleT, baseAlpha));
-          }
+          for (let arm = 0; arm < BLOOM_SPIRAL_ARMS; arm++) {
+              const armOffset = arm * armAngleStep;
+              const armSalt = arm * 17.31; // each arm has its own noise pattern
+              const armDelay = ARM_DELAYS[arm % ARM_DELAYS.length];
+              // Per-arm progress — accounts for staggered start.
+              const armProgress = Math.max(0, (drawProgress - armDelay) / Math.max(1 - armDelay, 0.001));
 
-          // Inflorescences: small perpendicular petal-clusters at every quarter-turn.
-          const inflorescenceSteps = Math.floor(totalTheta / (Math.PI / 2));
-          for (let k = 1; k <= inflorescenceSteps; k++) {
-              const inflT = (k * Math.PI / 2) / totalTheta;
-              if (inflT > drawProgress) break;
+              // Trace this arm's spiral with organic wobble + per-cell appearance jitter.
+              for (let i = 0; i <= samplesPerArm; i++) {
+                  const sampleT = i / samplesPerArm;
+                  // Each cell along the arm has its own appearance time, jittered.
+                  const cellOffset = (noise01(sampleT * 234.7, armSalt + 4.2) - 0.5) * APPEAR_JITTER;
+                  const cellEffectiveT = sampleT + cellOffset;
+                  if (cellEffectiveT > armProgress) continue;
 
-              // Spiral position at this θ.
-              const theta = inflT * totalTheta;
-              const r = inflT * maxRadius;
-              const px = cx + r * Math.cos(theta);
-              const py = cy + r * Math.sin(theta);
+                  const theta = sampleT * totalTheta + armOffset;
+                  const r = sampleT * maxRadius;
+                  // Wobble along the local perpendicular to the spiral tangent.
+                  const wobble = (noise01(theta * SPIRAL_WOBBLE_FREQ, armSalt) - 0.5) * SPIRAL_WOBBLE * 2;
+                  const perpX = -Math.sin(theta);
+                  const perpY = Math.cos(theta);
+                  const sx = cx + r * Math.cos(theta) + perpX * wobble;
+                  const sy = cy + r * Math.sin(theta) + perpY * wobble;
+                  const gx = Math.round(sx);
+                  const gy = Math.round(sy);
+                  if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) continue;
 
-              // Tangent (numerical derivative).
-              const eps = 0.003;
-              const theta2 = (inflT + eps) * totalTheta;
-              const r2 = (inflT + eps) * maxRadius;
-              const tx = (cx + r2 * Math.cos(theta2)) - px;
-              const ty = (cy + r2 * Math.sin(theta2)) - py;
-              const len = Math.hypot(tx, ty) || 1;
-              // Perpendicular (rotate 90°).
-              const perpX = -ty / len;
-              const perpY = tx / len;
+                  // Fade-in: cells brighten gradually after they "appear" rather than
+                  // popping in at full alpha. Reads as accretion, not stamping.
+                  const sinceAppear = armProgress - cellEffectiveT;
+                  const fadeIn = Math.min(sinceAppear / FADE_IN_WINDOW, 1);
+                  // Subtle head warmth — gentle slope, no missile-tip spike.
+                  const distFromHead = armProgress - sampleT;
+                  const headWarmth = includeHead && distFromHead > 0
+                      ? 0.10 * Math.exp(-distFromHead * 6)
+                      : 0;
+                  const baseAlpha = (0.80 + headWarmth) * fadeIn * pulsation * flowerAlpha;
+                  paintCell(gx, gy, sunsetColor(sampleT, baseAlpha));
+              }
 
-              const petalLen = 1 + Math.floor(inflT * 2.5); // outer inflorescences are bigger
-              for (let p = 1; p <= petalLen; p++) {
-                  const a = (1 - (p - 1) / petalLen) * 0.85 * pulsation * flowerAlpha;
-                  const c = sunsetColor(Math.min(inflT + 0.1, 1), a);
-                  // Both sides of the spiral.
-                  const ax = Math.round(px + perpX * p);
-                  const ay = Math.round(py + perpY * p);
-                  const bx = Math.round(px - perpX * p);
-                  const by = Math.round(py - perpY * p);
-                  if (ax >= 0 && ay >= 0 && ax < dims.width && ay < dims.height) {
-                      paintCell(ax, ay, c);
-                  }
-                  if (bx >= 0 && by >= 0 && bx < dims.width && by < dims.height) {
-                      paintCell(bx, by, c);
+              // Inflorescences with mild positional + length variation.
+              for (let k = 1; k <= inflorescenceCount; k++) {
+                  // Slightly jitter the spacing so petals don't land at perfectly identical θ values.
+                  const inflJitter = (noise01(k * 3.71, armSalt + 1.0) - 0.5) * 0.18;
+                  const inflT = ((k * BLOOM_INFLORESCENCE_STEP) / totalTheta) + inflJitter / totalTheta;
+                  if (inflT <= 0 || inflT > armProgress) continue;
+
+                  // Petals fade in along with the arm's growth.
+                  const sinceInflAppear = armProgress - inflT;
+                  const inflFadeIn = Math.min(sinceInflAppear / FADE_IN_WINDOW, 1);
+
+                  const theta = inflT * totalTheta + armOffset;
+                  const r = inflT * maxRadius;
+                  const px = cx + r * Math.cos(theta);
+                  const py = cy + r * Math.sin(theta);
+
+                  const eps = 0.003;
+                  const theta2 = (inflT + eps) * totalTheta + armOffset;
+                  const r2 = (inflT + eps) * maxRadius;
+                  const tx = (cx + r2 * Math.cos(theta2)) - px;
+                  const ty = (cy + r2 * Math.sin(theta2)) - py;
+                  const len = Math.hypot(tx, ty) || 1;
+                  const perpX = -ty / len;
+                  const perpY = tx / len;
+
+                  // Each side independently varies length within ±1 cell of the base.
+                  const lenA = BLOOM_INFLORESCENCE_LEN + Math.round((noise01(k * 7.13, armSalt + 2.0) - 0.5) * 1.6);
+                  const lenB = BLOOM_INFLORESCENCE_LEN + Math.round((noise01(k * 5.27, armSalt + 3.0) - 0.5) * 1.6);
+                  const maxLen = Math.max(lenA, lenB);
+                  for (let p = 1; p <= maxLen; p++) {
+                      const a = (1 - (p - 1) / Math.max(maxLen, 1)) * 0.85 * inflFadeIn * pulsation * flowerAlpha;
+                      const c = sunsetColor(Math.min(inflT + 0.1, 1), a);
+                      if (p <= lenA) {
+                          const ax = Math.round(px + perpX * p);
+                          const ay = Math.round(py + perpY * p);
+                          if (ax >= 0 && ay >= 0 && ax < dims.width && ay < dims.height) paintCell(ax, ay, c);
+                      }
+                      if (p <= lenB) {
+                          const bx = Math.round(px - perpX * p);
+                          const by = Math.round(py - perpY * p);
+                          if (bx >= 0 && by >= 0 && bx < dims.width && by < dims.height) paintCell(bx, by, c);
+                      }
                   }
               }
-          }
-
-          // Bright pulse head at the leading edge of the spiral trace.
-          if (includeHead && drawProgress < 1) {
-              const theta = drawProgress * totalTheta;
-              const r = drawProgress * maxRadius;
-              const hx = Math.round(cx + r * Math.cos(theta));
-              const hy = Math.round(cy + r * Math.sin(theta));
-              paintCell(hx, hy, `rgba(255,250,230,${flowerAlpha})`);
-              // Small halo.
-              [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
-                  paintCell(hx + dx, hy + dy, sunsetColor(0.05, 0.7 * flowerAlpha));
-              });
+              // No discrete pulse head — the per-cell fade-in already conveys the
+              // leading edge as a soft warm gradient, not a missile tip.
           }
 
           // Glowing core seed — always present during bloom, fades during sporulation.
