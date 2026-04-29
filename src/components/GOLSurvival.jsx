@@ -2280,24 +2280,19 @@ const GOLSurvival = () => {
       phaseStartFrameRef.current = frameCountRef.current;
       stasisCounterRef.current = 0;
 
-      // Bloom center anchors at the position of the source with the most biomass —
-      // its dominant colony. Keeps the bloom rooted in real network territory even
-      // when colonies died separately without ever forming an alliance (in which
-      // case a global centroid would land in empty space between two dead pile-ups).
+      // Bloom center logic:
+      //   • If colonies touched and merged (any source has formed an alliance), the
+      //     bloom is the centroid of the unified network — sits in the middle, where
+      //     the merge actually happened.
+      //   • If colonies stayed disjoint (no alliance ever formed), the bloom anchors
+      //     at the position of the dominant source — keeps the flower rooted in real
+      //     biomass instead of landing in the empty space between two pile-ups.
       const dims = gridDimensions.current;
-      let bestSource = null;
-      let bestMass = -1;
-      sourcesRef.current.forEach((s) => {
-          let mass = 0;
-          tendrilsRef.current.forEach((t) => {
-              if (t.sourceId === s.id) mass += (t.path && t.path.length) || 0;
-          });
-          if (mass > bestMass) { bestMass = mass; bestSource = s; }
-      });
-      if (bestSource && bestMass > 0) {
-          bloomCenterRef.current = { x: bestSource.x, y: bestSource.y };
-      } else {
-          // Fallback: centroid of any remaining cells, or canvas center.
+      const hasAlliance = sourcesRef.current.some(
+          (s) => s.alliedWith && s.alliedWith.size > 0
+      );
+
+      const computeCentroid = () => {
           let sumX = 0, sumY = 0, count = 0;
           for (let y = 0; y < dims.height; y++) {
               if (!gridRef.current[y]) continue;
@@ -2308,9 +2303,26 @@ const GOLSurvival = () => {
                   }
               }
           }
-          bloomCenterRef.current = count > 0
+          return count > 0
               ? { x: Math.floor(sumX / count), y: Math.floor(sumY / count) }
               : { x: Math.floor(dims.width / 2), y: Math.floor(dims.height / 2) };
+      };
+
+      if (hasAlliance) {
+          bloomCenterRef.current = computeCentroid();
+      } else {
+          let bestSource = null;
+          let bestMass = -1;
+          sourcesRef.current.forEach((s) => {
+              let mass = 0;
+              tendrilsRef.current.forEach((t) => {
+                  if (t.sourceId === s.id) mass += (t.path && t.path.length) || 0;
+              });
+              if (mass > bestMass) { bestMass = mass; bestSource = s; }
+          });
+          bloomCenterRef.current = (bestSource && bestMass > 0)
+              ? { x: bestSource.x, y: bestSource.y }
+              : computeCentroid();
       }
 
       let maxDist = 0;
