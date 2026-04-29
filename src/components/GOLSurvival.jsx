@@ -2685,56 +2685,74 @@ const GOLSurvival = () => {
         Your browser does not support the canvas element.
       </canvas>
 
-       {/* Controls Container */}
-       <div className={`absolute bottom-4 left-4 flex space-x-6 ${error ? 'hidden' : ''}`}>
-           {/* Parameter Sliders */}
-           <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48 shadow-lg">
-                <div className="flex items-center justify-between">
-                   <label htmlFor="signalFrequency" className="flex-1 mr-1">Signal Freq:</label>
-                   <input type="range" id="signalFrequency" min="1" max="30" step="0.5" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-24 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{signalFrequency.toFixed(1)} Hz</span>
-                 </div>
-                 <div className="flex items-center justify-between">
-                   <label htmlFor="pulseSpeed" className="flex-1 mr-1">Pulse Speed:</label>
-                   <input type="range" id="pulseSpeed" min="5" max="60" step="1" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-24 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{pulseSpeed.toFixed(1)}</span>
-                 </div>
-                 <div className="flex items-center justify-between">
-                   <label htmlFor="branch" className="flex-1 mr-1">Branch %:</label>
-                   <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{(branchChance * 100).toFixed(0)}%</span>
-                 </div>
-                 <div className="flex items-center justify-between">
-                   <label htmlFor="growthFactor" className="flex-1 mr-1">Growth:</label>
-                   <input type="range" id="growthFactor" min="1" max="10" step="1" value={growthFactor} onChange={(e) => setGrowthFactor(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{growthFactor}</span>
-                 </div>
-                {/* Removed Fade Speed slider - now have standard/reabsorbing */}
+       {/* Controls — single frosted panel, slime-mold neon palette */}
+       <div className={`absolute bottom-5 left-5 ${error ? 'hidden' : ''}`}>
+         <div className="rounded-xl border border-white/[0.08] bg-[#0a0f18]/85 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex gap-5 font-mono text-[#cfd6e0] select-none">
+           {/* Sliders column */}
+           <div className="flex flex-col gap-2.5 min-w-[210px]">
+             {[
+               { id: 'sf', label: 'signal',  v: signalFrequency, set: setSignalFrequency, min: 1, max: 30,  step: 0.5,  fmt: (x) => `${x.toFixed(1)} Hz` },
+               { id: 'ps', label: 'pulse',   v: pulseSpeed,      set: setPulseSpeed,      min: 5, max: 60,  step: 1,    fmt: (x) => x.toFixed(0) },
+               { id: 'br', label: 'branch',  v: branchChance,    set: setBranchChance,    min: 0, max: 0.5, step: 0.01, fmt: (x) => `${(x * 100).toFixed(0)}%` },
+               { id: 'gr', label: 'growth',  v: growthFactor,    set: setGrowthFactor,    min: 1, max: 10,  step: 1,    fmt: (x) => `${x}` },
+             ].map((s) => (
+               <div key={s.id} className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px]">
+                 <label htmlFor={s.id} className="uppercase tracking-[0.18em] text-[#7c8898]">{s.label}</label>
+                 <input
+                   type="range" id={s.id}
+                   min={s.min} max={s.max} step={s.step}
+                   value={s.v}
+                   onChange={(e) => s.set(Number(e.target.value))}
+                   className="slime-slider w-full h-1 appearance-none rounded-full bg-white/10 cursor-pointer"
+                   style={{ accentColor: '#ff9c32' }}
+                 />
+                 <span className="text-right text-[10px] text-white/80 tabular-nums">{s.fmt(s.v)}</span>
+               </div>
+             ))}
            </div>
 
-           {/* Directional Weights Grid */}
-            <div className="bg-gray-800 bg-opacity-80 p-3 rounded text-white text-xs shadow-lg">
-                <label className="block text-center mb-2 font-semibold">Growth Bias</label>
-                <div className="grid grid-cols-3 gap-1 w-32">
-                   {[0, 1, 2, 3, -1, 5, 6, 7, 8].map((uiIndex) => {
-                     const relDir = UI_INDEX_TO_RELATIVE[uiIndex];
-                     const isDisabled = uiIndex === 4;
-                     return isDisabled ? (
-                       <div key="center" className="w-full h-8 flex items-center justify-center rounded bg-gray-600 text-gray-400 text-xs border border-gray-500"> • </div>
-                     ) : (
-                       <input
-                         key={uiIndex}
-                         type="number" min="0" step="0.1"
-                         value={directionWeights[uiIndex] !== undefined ? directionWeights[uiIndex] : ''}
-                         onChange={(e) => handleWeightChange(uiIndex, e.target.value)}
-                         title={relDir || 'Center'}
-                         className={`w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600`}
-                       />
-                     );
-                   })}
-                </div>
-            </div>
-           {/* TODO: Add display for total energy, active tendrils, etc. */}
+           {/* Growth bias — visual directional grid */}
+           <div className="flex flex-col items-center gap-2 pl-5 border-l border-white/[0.08]">
+             <span className="text-[10px] uppercase tracking-[0.20em] text-[#7c8898]">growth bias</span>
+             <div className="grid grid-cols-3 gap-[3px]">
+               {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((uiIndex) => {
+                 if (uiIndex === 4) {
+                   return (
+                     <div key="center" className="w-10 h-10 rounded-md bg-white/[0.025] border border-white/[0.05] flex items-center justify-center">
+                       <span className="w-1 h-1 rounded-full bg-white/40"></span>
+                     </div>
+                   );
+                 }
+                 const arrows = ['↖', '↑', '↗', '←', null, '→', '↙', '↓', '↘'];
+                 const arrow = arrows[uiIndex];
+                 const v = directionWeights[uiIndex] || 0;
+                 // Magnitude in [0, 1]: max usable bias ~3.0 — beyond that visual saturates.
+                 const mag = Math.min(v / 3, 1);
+                 // Color shifts from neutral (low) → warm orange (mid) → magenta-pink (high).
+                 const arrowColor = mag === 0
+                   ? 'rgba(170,180,195,0.55)'
+                   : `hsl(${28 - mag * 40}, ${70 + mag * 25}%, ${58 + mag * 4}%)`;
+                 const arrowOpacity = mag === 0 ? 0.55 : 0.6 + mag * 0.4;
+                 return (
+                   <div key={uiIndex} className="relative w-10 h-10 group">
+                     {/* Arrow on top, fills most of the tile */}
+                     <div className="pointer-events-none absolute inset-x-0 top-0 h-7 flex items-center justify-center">
+                       <span className="text-[18px] leading-none" style={{ color: arrowColor, opacity: arrowOpacity }}>{arrow}</span>
+                     </div>
+                     {/* Click-to-edit number input — covers tile, value rendered at bottom */}
+                     <input
+                       type="number" min={0} max={5} step={0.1}
+                       value={v}
+                       onChange={(e) => handleWeightChange(uiIndex, e.target.value)}
+                       title={UI_INDEX_TO_RELATIVE[uiIndex]}
+                       className="absolute inset-0 w-full h-full rounded-md bg-white/[0.03] border border-white/[0.07] hover:border-white/[0.18] focus:border-orange-400/60 focus:bg-white/[0.06] outline-none text-[9px] text-center text-white/75 tabular-nums pt-5 pb-0.5 transition-colors cursor-pointer appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                     />
+                   </div>
+                 );
+               })}
+             </div>
+           </div>
+         </div>
        </div>
     </div>
   );
