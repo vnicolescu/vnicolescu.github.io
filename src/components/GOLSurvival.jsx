@@ -2,12 +2,12 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
 const CELL_SIZE = 12; // Increased cell size for bolder, retro-pixel look
-const DEFAULT_GROWTH_FACTOR = 1; // Default cells advanced per pulse at each active tip
+const DEFAULT_GROWTH_FACTOR = 3; // Default cells advanced per pulse at each active tip
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
-const DEFAULT_SIGNAL_FREQUENCY = 10.0; // Hz – baseline, slider mid
-const DEFAULT_BRANCH_CHANCE = 0.10;
-const DEFAULT_PULSE_SPEED = 20.0; // Baseline (slider mid)
+const DEFAULT_SIGNAL_FREQUENCY = 22.0; // Hz – baseline, slider mid
+const DEFAULT_BRANCH_CHANCE = 0.20;
+const DEFAULT_PULSE_SPEED = 22.0; // Baseline (slider mid)
 const MAX_CELL_AGE = 1200; // Frames for full color/conductivity transition
 const MIN_CONDUCTIVITY = 0.8;
 const MAX_CONDUCTIVITY = 12.0; // Increased conductivity range
@@ -26,6 +26,15 @@ const REABSORPTION_FADE_SPEED = 0.005; // Faster fade for reabsorbed tendrils - 
 const STANDARD_FADE_SPEED = 0.002; // Slower fade for disconnected tendrils - SLOWED DOWN
 const REABSORB_STEP_INTERVAL = 3; // frames between removing tail cells during reabsorb
 const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsorbs
+
+// --- Bloom / Sporulation lifecycle ---
+const STASIS_THRESHOLD_FRAMES = 240;       // ~4s of zero growing tendrils → trigger retraction
+const RETRACTION_FRAMES = 200;              // slower implosion — reads as reconfiguring, not destruction
+const BLOOM_DURATION_FRAMES = 220;          // ~3.7s for the spiral flower to grow + pulsate
+const SPORE_TRAVEL_FRAMES = 100;            // ~1.7s for spores to fly out and land
+const SPORE_DISTANCE_FRACTION = 0.32;       // fraction of min(grid dim) the spores travel
+const BLOOM_SPIRAL_TURNS = 3.25;            // number of revolutions in the spiral flower
+const BLOOM_RADIUS_FRACTION = 0.42;         // flower radius as fraction of min(grid dim)
 
 // --- Colors ---
 const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
@@ -135,6 +144,15 @@ const GOLSurvival = () => {
   const currentTimeRef = useRef(0);
   const [error, setError] = useState(null);
   const gridDimensions = useRef({ width: 0, height: 0 });
+
+  // --- Bloom lifecycle refs ---
+  const phaseRef = useRef('normal'); // 'normal' | 'retracting' | 'blooming' | 'sporulating'
+  const phaseStartFrameRef = useRef(0);
+  const stasisCounterRef = useRef(0);
+  const lastGrowthFrameRef = useRef(0); // last frame any tendril successfully grew (path push)
+  const bloomCenterRef = useRef({ x: 0, y: 0 });
+  const retractionMaxDistRef = useRef(1); // max cell distance from bloom center at retraction start
+  const sporesRef = useRef([]); // [{ startX, startY, finalX, finalY }]
 
   // --- State for Simulation Parameters ---
   const [signalFrequency, setSignalFrequency] = useState(DEFAULT_SIGNAL_FREQUENCY);
@@ -247,17 +265,17 @@ const GOLSurvival = () => {
     }
   };
 
-  // Handle Tendril Collision - MUST BE DECLARED EARLY
+  // Handle Tendril Collision — cooperative merge (Physarum-style).
+  // The moving tendril stops here and becomes a permanent bridge into the other network.
+  // Both source colonies stay alive and keep growing/pulsing; they're now allies.
   const handleTendrilCollision = (movingTendril, staticTendril) => {
     if (!movingTendril || !staticTendril || !gridRef.current) return;
 
     if (movingTendril.sourceId !== staticTendril.sourceId) {
-      console.log(`%cCollision: moving ${movingTendril.id} hit ${staticTendril.id}`,'color: yellow');
+      console.log(`%cMerge: ${movingTendril.id} (${movingTendril.sourceId}) bridged into ${staticTendril.id} (${staticTendril.sourceId})`, 'color: cyan');
 
-      // Only the moving branch starts fading; contacted branch lives
-      movingTendril.state = 'fading';
-
-      // Form alliance path
+      // Caller (growth path) sets state = 'connected' on the moving tendril after this returns.
+      // Form alliance — both sources stay active, energy pools stay independent.
       formAllianceBetweenSources(movingTendril.sourceId, staticTendril.sourceId, movingTendril.path[movingTendril.path.length-1]);
 
       const collisionPoint = movingTendril.path[movingTendril.path.length - 1];
@@ -358,6 +376,7 @@ const GOLSurvival = () => {
                   isActive: true, // Can this source emit signals?
                   lastActivityFrame: 0, // For regeneration logic
                   state: 'active', // 'active', 'inactive', 'regenerating'
+                  alliedWith: new Set(), // Source IDs this source has merged with
               };
               sourcesRef.current.push(newSource);
 
@@ -586,6 +605,12 @@ const GOLSurvival = () => {
                   if (source) {
                       const grew = tryGrowTendril(tendril, source);
                       if (grew) {
+                          // Only real new biomass counts toward "alive". Collision-merges
+                          // flip state to 'connected' and aren't new growth — those would
+                          // mask actual stasis on a saturated network.
+                          if (tendril.state === 'growing') {
+                              lastGrowthFrameRef.current = frameCountRef.current;
+                          }
                           tendril.growthRemaining -= 1;
                           // Let the signal sit on the brand‑new tip so it visually leads growth
                           attemptBranching && attemptBranching(tendril, source);
@@ -636,6 +661,19 @@ const GOLSurvival = () => {
 
           // Check for branch points between current and new integer position
           if (newIntPos > currentSignalPos) {
+              // Refresh aging on cells the pulse just traversed — active paths
+              // stay young and orange; abandoned paths age toward blue. Real
+              // Physarum networks look like this: bright arteries, dim capillaries.
+              const refreshFrame = frameCountRef.current;
+              const lastRefreshIdx = Math.min(newIntPos, pathLength - 1);
+              for (let pos = currentSignalPos; pos <= lastRefreshIdx; pos++) {
+                  const p = tendril.path[pos];
+                  if (!p) continue;
+                  const c = gridRef.current[p.y]?.[p.x];
+                  if (c && c.type !== 'empty' && c.type !== 'food') {
+                      c.creationFrame = refreshFrame;
+                  }
+              }
               // Specifically look for branch points that need signal propagation
               checkForBranchPoints(tendril, currentSignalPos, newIntPos);
           }
@@ -724,6 +762,10 @@ const GOLSurvival = () => {
               if (!grew) {
                   // Stop if blocked or could not grow further
                   break;
+              }
+              // Only count real new biomass (state stays 'growing'); skip collision-merges.
+              if (tendril.state === 'growing') {
+                  lastGrowthFrameRef.current = frameCountRef.current;
               }
 
               // Visually push the pulse to the new tip for each successful cell grown
@@ -1712,44 +1754,92 @@ const GOLSurvival = () => {
            const intervalMs = 1000 / (currentParams.signalFrequency || 1.0);
            const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
 
-           // Main update steps with error handling
-           try {
-               // 1. Emit Signals when it's time
-               if (elapsedSinceLastEmit >= intervalMs) {
-                   emitSignal();
-                   lastSignalEmitTimeRef.current = currentTimeRef.current;
+           // Simulation only runs in the 'normal' phase. Retraction is rendered by
+           // a custom distance-based sweep (stepRetraction); bloom and sporulation
+           // are pure overlay paints. The engine is fully paused during all three.
+           const phase = phaseRef.current;
+           const simulationActive = phase === 'normal';
+
+           if (phase === 'retracting') {
+               try { stepRetraction(); } catch (rErr) { console.error('Error in retraction step:', rErr); }
+           }
+
+           if (simulationActive) {
+               try {
+                   // 1. Emit Signals when it's time
+                   if (elapsedSinceLastEmit >= intervalMs) {
+                       emitSignal();
+                       lastSignalEmitTimeRef.current = currentTimeRef.current;
+                   }
+               } catch (signalErr) {
+                   console.error("Error emitting signals:", signalErr);
                }
-           } catch (signalErr) {
-               console.error("Error emitting signals:", signalErr);
-           }
 
-           try {
-               // 2. Propagate Signals
-               const newlyReachedTips = propagateSignal(deltaTime) || new Set();
+               try {
+                   // 2. Propagate Signals
+                   const newlyReachedTips = propagateSignal(deltaTime) || new Set();
 
-               // 3. Growth at tips
-               triggerGrowthAtTips(newlyReachedTips);
-           } catch (growthErr) {
-               console.error("Error in propagation/growth:", growthErr);
-           }
-
-           try {
-               // 4. Handle fading tendrils
-               updateFadingTendrils();
-
-               // 5. Path integrity checks (less frequent)
-               if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
-                   verifyPathIntegrity();
+                   // 3. Growth at tips
+                   triggerGrowthAtTips(newlyReachedTips);
+               } catch (growthErr) {
+                   console.error("Error in propagation/growth:", growthErr);
                }
-           } catch (updateErr) {
-               console.error("Error in tendril updates:", updateErr);
+
+               try {
+                   // 4. Handle fading tendrils
+                   updateFadingTendrils();
+
+                   // 5. Path integrity checks (less frequent)
+                   if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
+                       verifyPathIntegrity();
+                   }
+               } catch (updateErr) {
+                   console.error("Error in tendril updates:", updateErr);
+               }
            }
 
-           // Draw the simulation
+           // Draw the simulation grid (or empty grid during bloom/sporulating)
            try {
                drawGridAndElements();
            } catch (drawErr) {
                console.error("Error drawing simulation:", drawErr);
+           }
+
+           // Bloom + spore overlay on top
+           try {
+               drawBloomOverlay();
+           } catch (bloomErr) {
+               console.error("Error drawing bloom overlay:", bloomErr);
+           }
+
+           // Phase transitions
+           try {
+               if (phase === 'normal') {
+                   // Stasis = no successful growth (path push) for STASIS_THRESHOLD_FRAMES.
+                   // This is robust: tendrils oscillating between blocked/growing in dense
+                   // networks don't fool the detector — only real new biomass counts.
+                   if (tendrilsRef.current.size > 0 &&
+                       (frameCountRef.current - lastGrowthFrameRef.current) >= STASIS_THRESHOLD_FRAMES) {
+                       enterRetractionPhase();
+                   }
+               } else if (phase === 'retracting') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= RETRACTION_FRAMES) {
+                       enterBloomPhase();
+                   }
+               } else if (phase === 'blooming') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= BLOOM_DURATION_FRAMES) {
+                       enterSporulationPhase();
+                   }
+               } else if (phase === 'sporulating') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= SPORE_TRAVEL_FRAMES) {
+                       completeRebirth();
+                   }
+               }
+           } catch (phaseErr) {
+               console.error("Error in phase transition:", phaseErr);
            }
 
            // Continue the animation loop
@@ -1763,8 +1853,14 @@ const GOLSurvival = () => {
                animationFrameIdRef.current = null;
            }
        }
+   // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [error, emitSignal, propagateSignal, triggerGrowthAtTips, spawnFoodPellets,
       updateFadingTendrils, verifyPathIntegrity, drawGridAndElements]);
+   // Note: drawBloomOverlay + enter*Phase + completeRebirth are deliberately omitted.
+   // They're declared later in this component (after `render`), which would put them
+   // in the temporal dead zone when this useCallback's deps array is evaluated.
+   // They're stable closures (their own deps are empty), and `render` reaches them
+   // via closure at call time — so omission is safe AND correct.
 
 
   // --- Initialization and Cleanup ---
@@ -1870,6 +1966,16 @@ const GOLSurvival = () => {
 
       window.addEventListener('resize', handleResize);
 
+      // Dev shortcut: press B to manually trigger the bloom from the current state.
+      const handleKey = (e) => {
+          if (e.key === 'b' || e.key === 'B') {
+              if (phaseRef.current === 'normal' || phaseRef.current === 'retracting') {
+                  enterRetractionPhase();
+              }
+          }
+      };
+      window.addEventListener('keydown', handleKey);
+
       // Cleanup
       return () => {
           console.log("GOLSurvival component unmounting.");
@@ -1877,12 +1983,14 @@ const GOLSurvival = () => {
               window.cancelAnimationFrame(animationFrameIdRef.current);
           }
           window.removeEventListener('resize', handleResize);
+          window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
           sourcesRef.current = [];
           foodPelletsRef.current = [];
           connectionsRef.current = [];
       };
-  }, [initializeSimulation, render, emitSignal]); // Add dependencies
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initializeSimulation, render, emitSignal]); // enterRetractionPhase reached via closure (TDZ avoidance)
 
 
   // --- UI Handler ---
@@ -2033,24 +2141,28 @@ const GOLSurvival = () => {
   }, [getTendrilById, growthFactor]); // Depends on getTendrilById
 
   // --- Alliance / Source merge ---
+  // Cooperative model: when two colonies meet, they form a persistent alliance.
+  // Both sources stay active and keep their own energy pools; the connection
+  // point becomes a visible bridge. Idempotent — re-collisions don't re-merge.
   const formAllianceBetweenSources = useCallback((srcIdA, srcIdB, connectionPoint) => {
       if (!srcIdA || !srcIdB || srcIdA === srcIdB) return;
       const sourceA = getSourceById(srcIdA);
       const sourceB = getSourceById(srcIdB);
       if (!sourceA || !sourceB) return;
 
-      // Choose survivor: keep the one with higher energy (arbitrary rule)
-      const primary = sourceA.energy >= sourceB.energy ? sourceA : sourceB;
-      const secondary = primary === sourceA ? sourceB : sourceA;
+      // Lazily initialize allied sets for sources placed before this field existed.
+      if (!sourceA.alliedWith) sourceA.alliedWith = new Set();
+      if (!sourceB.alliedWith) sourceB.alliedWith = new Set();
 
-      primary.energy += secondary.energy; // Merge energy pools
-      secondary.energy = 0;
-      secondary.isActive = false;
-      secondary.state = 'inactive';
+      const isNewAlliance = !sourceA.alliedWith.has(srcIdB);
+      sourceA.alliedWith.add(srcIdB);
+      sourceB.alliedWith.add(srcIdA);
 
-      console.log(`%cAlliance formed: ${primary.id} absorbs ${secondary.id}. Combined energy ${primary.energy.toFixed(0)}.`, 'color: cyan; font-weight:bold');
+      if (isNewAlliance) {
+          console.log(`%cAlliance formed: ${sourceA.id} ↔ ${sourceB.id}. Both colonies stay active. Energy: ${sourceA.energy.toFixed(0)} / ${sourceB.energy.toFixed(0)}.`, 'color: cyan; font-weight:bold');
+      }
 
-      // Optionally mark the connection point as an auxiliary source for visuals
+      // Mark the connection point as a visible bridge.
       if (connectionPoint && isWithinBounds(connectionPoint.x, connectionPoint.y)) {
           const cell = gridRef.current[connectionPoint.y][connectionPoint.x];
           if (cell) {
@@ -2058,6 +2170,460 @@ const GOLSurvival = () => {
           }
       }
   }, [getSourceById, isWithinBounds]);
+
+  // --- Bloom lifecycle ---
+  // Sunset palette: pale gold → orange → coral → pink → magenta → deep purple.
+  // Returns rgba() string. t in [0, 1].
+  const sunsetColor = (t, alpha = 1) => {
+      const stops = [
+          [255, 240, 200], // pale gold
+          [255, 180, 90],  // orange
+          [255, 120, 110], // coral
+          [255, 95, 165],  // pink
+          [220, 70, 200],  // magenta
+          [130, 40, 180],  // deep purple
+      ];
+      const clamped = Math.max(0, Math.min(1, t));
+      const segs = stops.length - 1;
+      const idx = Math.min(Math.floor(clamped * segs), segs - 1);
+      const local = (clamped * segs) - idx;
+      const a = stops[idx], b = stops[idx + 1];
+      const r = Math.round(a[0] + (b[0] - a[0]) * local);
+      const g = Math.round(a[1] + (b[1] - a[1]) * local);
+      const bl = Math.round(a[2] + (b[2] - a[2]) * local);
+      return `rgba(${r},${g},${bl},${alpha})`;
+  };
+
+  // Stable per-cell pseudo-random in [0, 1) — for stochastic dissolution jitter.
+  // The classic GLSL "fract(sin · large)" noise. No axis-aligned correlation between
+  // neighbors, so adjacent cells get genuinely different jitter values and don't
+  // dissolve in visible blocks.
+  const cellHash01 = (x, y) => {
+      const v = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+      return v - Math.floor(v);
+  };
+
+  // Per-cell dissolution time in [0, 1]. Outer cells get small values (dissolve early),
+  // inner cells get values near 1 (dissolve last). Jitter spreads it stochastically so
+  // the consumption reads as a soft wave, not a hard ring.
+  const RETRACTION_JITTER = 0.12; // ±0.06 spread — distance-driven wave, just enough fuzz to feel organic
+  const cellDissolutionT = (x, y, cx, cy, maxDist) => {
+      const d = Math.hypot(x - cx, y - cy);
+      const normD = maxDist > 0 ? d / maxDist : 0;
+      const jitter = (cellHash01(x, y) - 0.5) * RETRACTION_JITTER;
+      return Math.max(0, Math.min(1, (1 - normD) + jitter));
+  };
+
+  const enterRetractionPhase = useCallback(() => {
+      console.log('%c🌀 STASIS — colony imploding toward bloom center', 'color: hotpink; font-weight: bold');
+      phaseRef.current = 'retracting';
+      phaseStartFrameRef.current = frameCountRef.current;
+      stasisCounterRef.current = 0;
+
+      // Bloom center = centroid of live biomass; max distance sets the implosion radius.
+      const dims = gridDimensions.current;
+      let sumX = 0, sumY = 0, count = 0;
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (c && (c.type === 'tendril' || c.type === 'source')) {
+                  sumX += x; sumY += y; count++;
+              }
+          }
+      }
+      bloomCenterRef.current = count > 0
+          ? { x: Math.floor(sumX / count), y: Math.floor(sumY / count) }
+          : { x: Math.floor(dims.width / 2), y: Math.floor(dims.height / 2) };
+
+      let maxDist = 0;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (c && (c.type === 'tendril' || c.type === 'source')) {
+                  const d = Math.hypot(x - cx, y - cy);
+                  if (d > maxDist) maxDist = d;
+              }
+          }
+      }
+      retractionMaxDistRef.current = Math.max(maxDist, 1);
+
+      // Halt the engine.
+      sourcesRef.current.forEach(s => { s.isActive = false; s.state = 'inactive'; });
+      tendrilsRef.current.forEach(t => { t.signalState = 'idle'; });
+  }, []);
+
+  // Per-frame retraction: each cell has a deterministic "dissolution time" based on
+  // its distance from the bloom center plus per-cell jitter. Once t exceeds that
+  // dissolution time, the cell is removed. Outer biomass dissolves first; inner last.
+  // The result reads as an implosion — everything sucked toward the bloom point.
+  const stepRetraction = () => {
+      const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+      const t = Math.min(phaseElapsed / RETRACTION_FRAMES, 1);
+      const dims = gridDimensions.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      const maxDist = retractionMaxDistRef.current;
+
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (!c || (c.type !== 'tendril' && c.type !== 'source')) continue;
+              const dissT = cellDissolutionT(x, y, cx, cy, maxDist);
+              if (t >= dissT) {
+                  c.type = 'empty';
+                  c.color = BACKGROUND_COLOR;
+                  c.tendrilId = null;
+                  c.sourceId = null;
+                  c.opacity = 0;
+                  c.isBranchPoint = false;
+                  c.isConnectionPoint = false;
+                  c.creationFrame = 0;
+              }
+          }
+      }
+  };
+
+  const enterBloomPhase = useCallback(() => {
+      console.log('%c🌸 BLOOM', 'color: hotpink; font-weight: bold; font-size: 14px');
+      phaseRef.current = 'blooming';
+      phaseStartFrameRef.current = frameCountRef.current;
+
+      // Wipe the grid so the bloom paints on a clean canvas.
+      const dims = gridDimensions.current;
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (!c) continue;
+              c.type = 'empty';
+              c.color = BACKGROUND_COLOR;
+              c.tendrilId = null;
+              c.sourceId = null;
+              c.foodPelletId = null;
+              c.opacity = 1;
+              c.isBranchPoint = false;
+              c.isConnectionPoint = false;
+              c.creationFrame = 0;
+          }
+      }
+      tendrilsRef.current.clear();
+      sourcesRef.current = [];
+      foodPelletsRef.current = [];
+  }, []);
+
+  const enterSporulationPhase = useCallback(() => {
+      console.log('%c✨ Sporulation — two seeds shooting out', 'color: gold; font-weight: bold');
+      phaseRef.current = 'sporulating';
+      phaseStartFrameRef.current = frameCountRef.current;
+
+      const dims = gridDimensions.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.min(dims.width, dims.height) * SPORE_DISTANCE_FRACTION;
+      const margin = 5;
+      const clampX = (v) => Math.max(margin, Math.min(dims.width - margin - 1, v));
+      const clampY = (v) => Math.max(margin, Math.min(dims.height - margin - 1, v));
+      sporesRef.current = [
+          { startX: cx, startY: cy, finalX: clampX(Math.round(cx + Math.cos(angle) * dist)), finalY: clampY(Math.round(cy + Math.sin(angle) * dist)) },
+          { startX: cx, startY: cy, finalX: clampX(Math.round(cx - Math.cos(angle) * dist)), finalY: clampY(Math.round(cy - Math.sin(angle) * dist)) },
+      ];
+  }, []);
+
+  const completeRebirth = useCallback(() => {
+      console.log('%c🌱 New colonies seeded — simulation reborn', 'color: lime; font-weight: bold');
+      sourcesRef.current = [];
+      sporesRef.current.forEach((s, i) => {
+          const sourceId = `s-${frameCountRef.current}-${i}`;
+          const newSource = {
+              id: sourceId,
+              x: s.finalX,
+              y: s.finalY,
+              energy: INITIAL_SOURCE_ENERGY,
+              isActive: true,
+              lastActivityFrame: frameCountRef.current,
+              state: 'active',
+              alliedWith: new Set(),
+          };
+          sourcesRef.current.push(newSource);
+          if (isWithinBounds(s.finalX, s.finalY)) {
+              const cell = gridRef.current[s.finalY][s.finalX];
+              cell.type = 'source';
+              cell.color = SOURCE_COLOR;
+              cell.sourceId = sourceId;
+              cell.creationFrame = frameCountRef.current;
+              cell.opacity = 1;
+          }
+          // Plant the initial root tendril at the source.
+          const tendrilId = `t-${sourceId}-r`;
+          tendrilsRef.current.set(tendrilId, {
+              id: tendrilId,
+              sourceId,
+              path: [{ x: s.finalX, y: s.finalY }],
+              state: 'growing',
+              signalState: 'idle',
+              signalPosition: -1,
+              fractionalPos: 0,
+              opacity: 1,
+              isBranch: false,
+              parentId: null,
+              blockedFrame: null,
+              creationFrame: frameCountRef.current,
+              growthRemaining: 0,
+          });
+          if (isWithinBounds(s.finalX, s.finalY)) {
+              gridRef.current[s.finalY][s.finalX].tendrilId = tendrilId;
+          }
+      });
+      sporesRef.current = [];
+      phaseRef.current = 'normal';
+      stasisCounterRef.current = 0;
+      lastGrowthFrameRef.current = frameCountRef.current;
+      lastSignalEmitTimeRef.current = currentTimeRef.current;
+  }, [isWithinBounds]);
+
+  // All overlays draw as filled CELL_SIZE rectangles to match the simulation's pixel-grid aesthetic.
+  // No arcs, no shadowBlur — same chunky 8-bit feel as the tendrils.
+  const drawBloomOverlay = useCallback(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const phase = phaseRef.current;
+      if (phase === 'normal') return;
+
+      const dims = gridDimensions.current;
+      const elapsed = frameCountRef.current - phaseStartFrameRef.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+
+      // Helper: paint a grid cell with a sunset color.
+      const paintCell = (gx, gy, color) => {
+          if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) return;
+          ctx.fillStyle = color;
+          ctx.fillRect(gx * CELL_SIZE, gy * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+      };
+
+      ctx.save();
+
+      if (phase === 'retracting') {
+          const t = Math.min(elapsed / RETRACTION_FRAMES, 1);
+          const maxDist = retractionMaxDistRef.current;
+
+          // Tint cells about to dissolve — sunset wave precedes the consumption.
+          // Soft, jittered, distance-biased: cells light up just before disappearing,
+          // so the visual reads as everything being pulled toward the bloom center.
+          const PRE_DOOM_WINDOW = 0.10; // last 10% of life before dissolution
+          for (let gy = 0; gy < dims.height; gy++) {
+              if (!gridRef.current[gy]) continue;
+              for (let gx = 0; gx < dims.width; gx++) {
+                  const c = gridRef.current[gy][gx];
+                  if (!c || (c.type !== 'tendril' && c.type !== 'source')) continue;
+                  const dissT = cellDissolutionT(gx, gy, cx, cy, maxDist);
+                  const remaining = dissT - t;
+                  if (remaining > 0 && remaining < PRE_DOOM_WINDOW) {
+                      const intensity = 1 - remaining / PRE_DOOM_WINDOW;
+                      // Hotter palette as the dissolution moment approaches.
+                      paintCell(gx, gy, sunsetColor(0.10 + intensity * 0.45, intensity * 0.9));
+                  }
+              }
+          }
+
+          // Anticipation glow building at the bloom center — the bloom is gathering.
+          const glowRadius = 0.5 + t * 3.0;
+          const r = Math.ceil(glowRadius) + 1;
+          const minY = Math.max(0, Math.floor(cy - r));
+          const maxY = Math.min(dims.height - 1, Math.ceil(cy + r));
+          const minX = Math.max(0, Math.floor(cx - r));
+          const maxX = Math.min(dims.width - 1, Math.ceil(cx + r));
+          for (let gy = minY; gy <= maxY; gy++) {
+              for (let gx = minX; gx <= maxX; gx++) {
+                  const d = Math.hypot(gx - cx, gy - cy);
+                  if (d < glowRadius) {
+                      const localT = 1 - d / glowRadius;
+                      paintCell(gx, gy, sunsetColor(0.55 - localT * 0.35, t * (0.4 + localT * 0.6)));
+                  }
+              }
+          }
+      } else if (phase === 'blooming' || phase === 'sporulating') {
+          // Spiral flower: an Archimedean spiral traced as discrete grid cells with
+          // a sunset gradient running from the gold core outward to magenta petal tips.
+          // Inflorescences (small perpendicular petal-bundles) appear at quarter-turns.
+          // During sporulation the flower fades — the bloom is consumed to launch the spores.
+          const maxRadius = Math.min(dims.width, dims.height) * BLOOM_RADIUS_FRACTION;
+          const totalTheta = BLOOM_SPIRAL_TURNS * 2 * Math.PI;
+
+          let drawProgress = 1; // how far along the spiral has been traced
+          let pulsation = 1;     // overall brightness multiplier
+          let includeHead = false;
+          let flowerAlpha = 1;   // fades to 0 during sporulation
+
+          if (phase === 'blooming') {
+              const t = Math.min(elapsed / BLOOM_DURATION_FRAMES, 1);
+              if (t < 0.55) {
+                  // Spiral grows outward — head pulse traces it, gradient fills behind.
+                  drawProgress = t / 0.55;
+                  includeHead = true;
+              } else if (t < 0.85) {
+                  // Fully bloomed — gentle pulsation.
+                  drawProgress = 1;
+                  pulsation = 0.92 + 0.08 * Math.sin((t - 0.55) * Math.PI * 5);
+              } else {
+                  // Pre-fade — slight dimming as the bloom prepares to launch spores.
+                  drawProgress = 1;
+                  flowerAlpha = 1 - (t - 0.85) / 0.15 * 0.25;
+              }
+          } else {
+              // Sporulating: the flower is being consumed. Fade quickly from outside in.
+              const t = Math.min(elapsed / SPORE_TRAVEL_FRAMES, 1);
+              drawProgress = Math.max(0, 1 - t * 1.1); // outer petals retract first
+              flowerAlpha = Math.max(0, 1 - t * 1.3);
+          }
+
+          // Trace the spiral as discrete grid cells. Sample density is set so each
+          // cell along the path gets painted at least once (sample step ~0.5 cell).
+          const samples = 720;
+          const drawnSamples = Math.max(0, Math.floor(samples * drawProgress));
+          const painted = new Set();
+
+          for (let i = 0; i <= drawnSamples; i++) {
+              const sampleT = i / samples;
+              const theta = sampleT * totalTheta;
+              const r = sampleT * maxRadius;
+              const sx = cx + r * Math.cos(theta);
+              const sy = cy + r * Math.sin(theta);
+              const gx = Math.round(sx);
+              const gy = Math.round(sy);
+              if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) continue;
+              const key = gx * 4096 + gy;
+              if (painted.has(key)) continue;
+              painted.add(key);
+
+              // Color: sunset gradient — gold center → magenta tips.
+              // Slight head-boost (brighter near the leading edge of the trace).
+              const distFromHead = drawProgress - sampleT;
+              const headBoost = includeHead ? Math.exp(-distFromHead * 18) : 0;
+              const baseAlpha = (0.85 + headBoost * 0.15) * pulsation * flowerAlpha;
+              paintCell(gx, gy, sunsetColor(sampleT, baseAlpha));
+          }
+
+          // Inflorescences: small perpendicular petal-clusters at every quarter-turn.
+          const inflorescenceSteps = Math.floor(totalTheta / (Math.PI / 2));
+          for (let k = 1; k <= inflorescenceSteps; k++) {
+              const inflT = (k * Math.PI / 2) / totalTheta;
+              if (inflT > drawProgress) break;
+
+              // Spiral position at this θ.
+              const theta = inflT * totalTheta;
+              const r = inflT * maxRadius;
+              const px = cx + r * Math.cos(theta);
+              const py = cy + r * Math.sin(theta);
+
+              // Tangent (numerical derivative).
+              const eps = 0.003;
+              const theta2 = (inflT + eps) * totalTheta;
+              const r2 = (inflT + eps) * maxRadius;
+              const tx = (cx + r2 * Math.cos(theta2)) - px;
+              const ty = (cy + r2 * Math.sin(theta2)) - py;
+              const len = Math.hypot(tx, ty) || 1;
+              // Perpendicular (rotate 90°).
+              const perpX = -ty / len;
+              const perpY = tx / len;
+
+              const petalLen = 1 + Math.floor(inflT * 2.5); // outer inflorescences are bigger
+              for (let p = 1; p <= petalLen; p++) {
+                  const a = (1 - (p - 1) / petalLen) * 0.85 * pulsation * flowerAlpha;
+                  const c = sunsetColor(Math.min(inflT + 0.1, 1), a);
+                  // Both sides of the spiral.
+                  const ax = Math.round(px + perpX * p);
+                  const ay = Math.round(py + perpY * p);
+                  const bx = Math.round(px - perpX * p);
+                  const by = Math.round(py - perpY * p);
+                  if (ax >= 0 && ay >= 0 && ax < dims.width && ay < dims.height) {
+                      paintCell(ax, ay, c);
+                  }
+                  if (bx >= 0 && by >= 0 && bx < dims.width && by < dims.height) {
+                      paintCell(bx, by, c);
+                  }
+              }
+          }
+
+          // Bright pulse head at the leading edge of the spiral trace.
+          if (includeHead && drawProgress < 1) {
+              const theta = drawProgress * totalTheta;
+              const r = drawProgress * maxRadius;
+              const hx = Math.round(cx + r * Math.cos(theta));
+              const hy = Math.round(cy + r * Math.sin(theta));
+              paintCell(hx, hy, `rgba(255,250,230,${flowerAlpha})`);
+              // Small halo.
+              [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+                  paintCell(hx + dx, hy + dy, sunsetColor(0.05, 0.7 * flowerAlpha));
+              });
+          }
+
+          // Glowing core seed — always present during bloom, fades during sporulation.
+          if (flowerAlpha > 0) {
+              const corePulse = 0.5 + 0.5 * Math.sin(elapsed * 0.15);
+              paintCell(cx, cy, `rgba(255,250,235,${flowerAlpha})`);
+              [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+                  paintCell(cx + dx, cy + dy, sunsetColor(0.06, (0.7 + 0.25 * corePulse) * flowerAlpha));
+              });
+          }
+      }
+
+      // Spores fly out during sporulation regardless of flower fade.
+      if (phase === 'sporulating') {
+          const t = Math.min(elapsed / SPORE_TRAVEL_FRAMES, 1);
+          const easeT = 1 - Math.pow(1 - t, 3); // ease-out cubic
+
+          // Bloom afterglow at center, fading.
+          const ag = Math.max(0, 1 - elapsed / SPORE_TRAVEL_FRAMES);
+          if (ag > 0) {
+              const glowRadius = 2.5 * ag + 0.5;
+              const glowColor = sunsetColor(0.45, ag * 0.85);
+              const r = Math.ceil(glowRadius) + 1;
+              const minY = Math.max(0, Math.floor(cy - r));
+              const maxY = Math.min(dims.height - 1, Math.ceil(cy + r));
+              const minX = Math.max(0, Math.floor(cx - r));
+              const maxX = Math.min(dims.width - 1, Math.ceil(cx + r));
+              for (let gy = minY; gy <= maxY; gy++) {
+                  for (let gx = minX; gx <= maxX; gx++) {
+                      const d = Math.hypot(gx - cx, gy - cy);
+                      if (d < glowRadius) paintCell(gx, gy, glowColor);
+                  }
+              }
+          }
+
+          // Spores — chunky pixel cells with a fading trail.
+          sporesRef.current.forEach(s => {
+              const trailLen = 12;
+              for (let i = trailLen - 1; i >= 1; i--) {
+                  const tt = Math.max(0, easeT - i * 0.06);
+                  if (tt <= 0) continue;
+                  const tx = Math.round(s.startX + (s.finalX - s.startX) * tt);
+                  const ty = Math.round(s.startY + (s.finalY - s.startY) * tt);
+                  const a = (1 - i / trailLen) * (1 - t * 0.4) * 0.85;
+                  paintCell(tx, ty, sunsetColor(0.18 + i * 0.045, a));
+              }
+              // Bright head: a 3-cell cluster (head + tiny halo).
+              const hx = Math.round(s.startX + (s.finalX - s.startX) * easeT);
+              const hy = Math.round(s.startY + (s.finalY - s.startY) * easeT);
+              paintCell(hx, hy, sunsetColor(0.05, 1));
+              paintCell(hx + 1, hy, sunsetColor(0.15, 0.6));
+              paintCell(hx - 1, hy, sunsetColor(0.15, 0.6));
+              paintCell(hx, hy + 1, sunsetColor(0.15, 0.6));
+              paintCell(hx, hy - 1, sunsetColor(0.15, 0.6));
+          });
+      }
+
+      ctx.restore();
+  }, []);
 
   // --- JSX Return ---
   return (
