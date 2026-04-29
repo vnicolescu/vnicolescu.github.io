@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
-const CELL_SIZE = 12; // Increased cell size for bolder, retro-pixel look
+const BASE_CELL_SIZE = 12; // Default cell pixel size — slider can change this dynamically
 const DEFAULT_GROWTH_FACTOR = 3; // Default cells advanced per pulse at each active tip
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
@@ -147,6 +147,12 @@ const GOLSurvival = () => {
   const currentTimeRef = useRef(0);
   const [error, setError] = useState(null);
   const gridDimensions = useRef({ width: 0, height: 0 });
+
+  // --- Cell size + grid display ---
+  const [cellSize, setCellSize] = useState(BASE_CELL_SIZE);
+  const [showGrid, setShowGrid] = useState(true);
+  const cellSizeRef = useRef(BASE_CELL_SIZE);
+  const showGridRef = useRef(true);
 
   // --- Bloom lifecycle refs ---
   const phaseRef = useRef('normal'); // 'normal' | 'retracting' | 'blooming' | 'sporulating'
@@ -1474,7 +1480,7 @@ const GOLSurvival = () => {
                            context.globalAlpha = cellOpacity;
                            context.fillStyle = drawColor;
                            // Standard cell-sized rectangle (glow added later)
-                           context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                           context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
                            continue; // Skip further processing for food (no branch checks)
 
                        case 'tendril': {
@@ -1528,39 +1534,47 @@ const GOLSurvival = () => {
                    // Standard drawing for non-food cells
                    context.globalAlpha = cellOpacity;
                    context.fillStyle = drawColor;
-                   context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                   context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
                }
            }
 
-           // === Second pass: Draw grid lines ===
-           context.globalAlpha = 1.0;
-           context.strokeStyle = '#060C14'; // Updated grid color
-           context.lineWidth = 3; // 1.5x thickness (was 2)
+           // === Second pass: Draw grid lines (scales with cell size, optional) ===
+           // Line width scales sublinearly with cell size — at small sizes the grid
+           // disappears (no lines wider than the cells); at large sizes the spacing
+           // stays subtle rather than doubling with the cells.
+           const gridLineWidth = showGridRef.current
+               ? Math.min(3, Math.max(0, Math.floor(cellSizeRef.current / 4)))
+               : 0;
+           if (gridLineWidth > 0) {
+               context.globalAlpha = 1.0;
+               context.strokeStyle = '#060C14'; // Updated grid color
+               context.lineWidth = gridLineWidth;
 
-           // Draw vertical lines only between active cells
-           for (let gx = 1; gx < gridWidth; gx++) {
-               for (let gy = 0; gy < gridHeight; gy++) {
-                   const leftCell = gridRef.current[gy][gx - 1];
-                   const rightCell = gridRef.current[gy][gx];
-                   if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
-                       context.beginPath();
-                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
-                       context.lineTo(gx * CELL_SIZE, (gy + 1) * CELL_SIZE);
-                       context.stroke();
+               // Draw vertical lines only between active cells
+               for (let gx = 1; gx < gridWidth; gx++) {
+                   for (let gy = 0; gy < gridHeight; gy++) {
+                       const leftCell = gridRef.current[gy][gx - 1];
+                       const rightCell = gridRef.current[gy][gx];
+                       if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
+                           context.beginPath();
+                           context.moveTo(gx * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.lineTo(gx * cellSizeRef.current, (gy + 1) * cellSizeRef.current);
+                           context.stroke();
+                       }
                    }
                }
-           }
 
-           // Draw horizontal lines only between active cells
-           for (let gy = 1; gy < gridHeight; gy++) {
-               for (let gx = 0; gx < gridWidth; gx++) {
-                   const topCell = gridRef.current[gy - 1][gx];
-                   const bottomCell = gridRef.current[gy][gx];
-                   if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
-                       context.beginPath();
-                       context.moveTo(gx * CELL_SIZE, gy * CELL_SIZE);
-                       context.lineTo((gx + 1) * CELL_SIZE, gy * CELL_SIZE);
-                       context.stroke();
+               // Draw horizontal lines only between active cells
+               for (let gy = 1; gy < gridHeight; gy++) {
+                   for (let gx = 0; gx < gridWidth; gx++) {
+                       const topCell = gridRef.current[gy - 1][gx];
+                       const bottomCell = gridRef.current[gy][gx];
+                       if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
+                           context.beginPath();
+                           context.moveTo(gx * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.lineTo((gx + 1) * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.stroke();
+                       }
                    }
                }
            }
@@ -1626,9 +1640,9 @@ const GOLSurvival = () => {
                        context.shadowColor = glowColor;
                        context.fillStyle = SIGNAL_COLOR;
                        context.fillRect(
-                           coord.x * CELL_SIZE,
-                           coord.y * CELL_SIZE,
-                           CELL_SIZE, CELL_SIZE
+                           coord.x * cellSizeRef.current,
+                           coord.y * cellSizeRef.current,
+                           cellSizeRef.current, cellSizeRef.current
                        );
                        context.restore();
                    }
@@ -1663,7 +1677,7 @@ const GOLSurvival = () => {
                        context.shadowColor = drawColor;
                        // Draw a transparent rect just for the glow
                        context.fillStyle = 'rgba(0,0,0,0)';
-                       context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                       context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
                        context.restore();
                    }
                }
@@ -1680,7 +1694,7 @@ const GOLSurvival = () => {
                    context.shadowBlur = 16;
                    context.shadowColor = FOOD_COLOR;
                    context.fillStyle = 'rgba(0,0,0,0)';
-                   context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                   context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
                    context.restore();
                }
            }
@@ -1899,8 +1913,8 @@ const GOLSurvival = () => {
            }
           context.scale(dpr, dpr);
 
-          let gridWidth = Math.floor(clientWidth / CELL_SIZE);
-          let gridHeight = Math.floor(clientHeight / CELL_SIZE);
+          let gridWidth = Math.floor(clientWidth / cellSizeRef.current);
+          let gridHeight = Math.floor(clientHeight / cellSizeRef.current);
           // Force even dimensions so grid lines are uniform
           if (gridWidth % 2 !== 0) gridWidth -= 1;
           if (gridHeight % 2 !== 0) gridHeight -= 1;
@@ -1908,10 +1922,10 @@ const GOLSurvival = () => {
           gridDimensions.current = { width: gridWidth, height: gridHeight };
 
           // Size canvas to exact cell multiple to avoid stretched lines
-          canvas.width  = gridWidth  * CELL_SIZE * dpr;
-          canvas.height = gridHeight * CELL_SIZE * dpr;
-          canvas.style.width  = `${gridWidth  * CELL_SIZE}px`;
-          canvas.style.height = `${gridHeight * CELL_SIZE}px`;
+          canvas.width  = gridWidth  * cellSizeRef.current * dpr;
+          canvas.height = gridHeight * cellSizeRef.current * dpr;
+          canvas.style.width  = `${gridWidth  * cellSizeRef.current}px`;
+          canvas.style.height = `${gridHeight * cellSizeRef.current}px`;
 
           frameCountRef.current = 0;
           lastSignalEmitTimeRef.current = 0;
@@ -1969,6 +1983,10 @@ const GOLSurvival = () => {
 
       window.addEventListener('resize', handleResize);
 
+      // Re-initialize when cellSize changes — the grid + canvas dims must rebuild.
+      // Skipping the very first run avoids double-init on mount.
+      // (Implemented as a separate useEffect outside this closure — see below.)
+
       // Dev shortcut: press B to manually trigger the bloom from the current state.
       const handleKey = (e) => {
           if (e.key === 'b' || e.key === 'B') {
@@ -1994,6 +2012,30 @@ const GOLSurvival = () => {
       };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initializeSimulation, render, emitSignal]); // enterRetractionPhase reached via closure (TDZ avoidance)
+
+  // Re-initialize on cellSize change. First mount is handled by the mount effect above.
+  const cellSizeFirstRunRef = useRef(true);
+  useEffect(() => {
+      cellSizeRef.current = cellSize;
+      if (cellSizeFirstRunRef.current) {
+          cellSizeFirstRunRef.current = false;
+          return;
+      }
+      if (animationFrameIdRef.current) {
+          window.cancelAnimationFrame(animationFrameIdRef.current);
+          animationFrameIdRef.current = null;
+      }
+      if (initializeSimulation()) {
+          setTimeout(() => emitSignal(), 50);
+          animationFrameIdRef.current = window.requestAnimationFrame(render);
+      }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cellSize]);
+
+  // Sync showGrid → ref. No re-init needed; the next draw frame picks it up.
+  useEffect(() => {
+      showGridRef.current = showGrid;
+  }, [showGrid]);
 
 
   // --- UI Handler ---
@@ -2390,7 +2432,7 @@ const GOLSurvival = () => {
       lastSignalEmitTimeRef.current = currentTimeRef.current;
   }, [isWithinBounds]);
 
-  // All overlays draw as filled CELL_SIZE rectangles to match the simulation's pixel-grid aesthetic.
+  // All overlays draw as filled cellSizeRef.current rectangles to match the simulation's pixel-grid aesthetic.
   // No arcs, no shadowBlur — same chunky 8-bit feel as the tendrils.
   const drawBloomOverlay = useCallback(() => {
       const canvas = canvasRef.current;
@@ -2410,7 +2452,7 @@ const GOLSurvival = () => {
       const paintCell = (gx, gy, color) => {
           if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) return;
           ctx.fillStyle = color;
-          ctx.fillRect(gx * CELL_SIZE, gy * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+          ctx.fillRect(gx * cellSizeRef.current, gy * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
       };
 
       ctx.save();
@@ -2689,12 +2731,13 @@ const GOLSurvival = () => {
        <div className={`absolute bottom-5 left-5 ${error ? 'hidden' : ''}`}>
          <div className="rounded-xl border border-white/[0.08] bg-[#0a0f18]/85 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex gap-5 font-mono text-[#cfd6e0] select-none">
            {/* Sliders column */}
-           <div className="flex flex-col gap-2.5 min-w-[210px]">
+           <div className="flex flex-col gap-2.5 min-w-[218px]">
              {[
                { id: 'sf', label: 'signal',  v: signalFrequency, set: setSignalFrequency, min: 1, max: 30,  step: 0.5,  fmt: (x) => `${x.toFixed(1)} Hz` },
                { id: 'ps', label: 'pulse',   v: pulseSpeed,      set: setPulseSpeed,      min: 5, max: 60,  step: 1,    fmt: (x) => x.toFixed(0) },
                { id: 'br', label: 'branch',  v: branchChance,    set: setBranchChance,    min: 0, max: 0.5, step: 0.01, fmt: (x) => `${(x * 100).toFixed(0)}%` },
                { id: 'gr', label: 'growth',  v: growthFactor,    set: setGrowthFactor,    min: 1, max: 10,  step: 1,    fmt: (x) => `${x}` },
+               { id: 'cs', label: 'cell',    v: cellSize,        set: setCellSize,        min: 1, max: 24,  step: 1,    fmt: (x) => `${x}px` },
              ].map((s) => (
                <div key={s.id} className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px]">
                  <label htmlFor={s.id} className="uppercase tracking-[0.18em] text-[#7c8898]">{s.label}</label>
@@ -2709,6 +2752,19 @@ const GOLSurvival = () => {
                  <span className="text-right text-[10px] text-white/80 tabular-nums">{s.fmt(s.v)}</span>
                </div>
              ))}
+             {/* Grid toggle */}
+             <label className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px] cursor-pointer select-none">
+               <span className="uppercase tracking-[0.18em] text-[#7c8898]">grid</span>
+               <button
+                 type="button"
+                 onClick={() => setShowGrid(v => !v)}
+                 className={`relative w-9 h-4 rounded-full transition-colors ${showGrid ? 'bg-orange-400/70' : 'bg-white/10'}`}
+                 aria-pressed={showGrid}
+               >
+                 <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${showGrid ? 'translate-x-[18px]' : 'translate-x-0.5'}`}></span>
+               </button>
+               <span className="text-right text-[10px] text-white/80 tabular-nums">{showGrid ? 'on' : 'off'}</span>
+             </label>
            </div>
 
            {/* Growth bias — visual directional grid */}
