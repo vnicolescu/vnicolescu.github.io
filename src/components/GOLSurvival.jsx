@@ -1503,7 +1503,15 @@ const GOLSurvival = () => {
                                    const t = tendril.opacity || 0;
                                    drawColor = interpolateColors(REABSORBING_COLOR_END, REABSORBING_COLOR_START, t);
                                } else if (tendril.state === 'fading') {
-                                   drawColor = FADING_COLOR;
+                                   // Lazy-init fadeStartFrame on first render in fading state, then
+                                   // smoothly interpolate from current age-color to FADING_COLOR
+                                   // over ~1.5s. Combined with the existing opacity fade, gives
+                                   // a gentle senescence instead of an abrupt blue jump.
+                                   if (!tendril.fadeStartFrame) tendril.fadeStartFrame = frameCountRef.current;
+                                   const fadeElapsed = frameCountRef.current - tendril.fadeStartFrame;
+                                   const colorT = Math.min(fadeElapsed / 90, 1);
+                                   const ageColor = getColorFromAge(age);
+                                   drawColor = interpolateColors(ageColor, FADING_COLOR, colorT);
                                } else {
                                    // Normal growing/connected/blocked state
                                    drawColor = getColorFromAge(age);
@@ -2265,21 +2273,38 @@ const GOLSurvival = () => {
       phaseStartFrameRef.current = frameCountRef.current;
       stasisCounterRef.current = 0;
 
-      // Bloom center = centroid of live biomass; max distance sets the implosion radius.
+      // Bloom center anchors at the position of the source with the most biomass —
+      // its dominant colony. Keeps the bloom rooted in real network territory even
+      // when colonies died separately without ever forming an alliance (in which
+      // case a global centroid would land in empty space between two dead pile-ups).
       const dims = gridDimensions.current;
-      let sumX = 0, sumY = 0, count = 0;
-      for (let y = 0; y < dims.height; y++) {
-          if (!gridRef.current[y]) continue;
-          for (let x = 0; x < dims.width; x++) {
-              const c = gridRef.current[y][x];
-              if (c && (c.type === 'tendril' || c.type === 'source')) {
-                  sumX += x; sumY += y; count++;
+      let bestSource = null;
+      let bestMass = -1;
+      sourcesRef.current.forEach((s) => {
+          let mass = 0;
+          tendrilsRef.current.forEach((t) => {
+              if (t.sourceId === s.id) mass += (t.path && t.path.length) || 0;
+          });
+          if (mass > bestMass) { bestMass = mass; bestSource = s; }
+      });
+      if (bestSource && bestMass > 0) {
+          bloomCenterRef.current = { x: bestSource.x, y: bestSource.y };
+      } else {
+          // Fallback: centroid of any remaining cells, or canvas center.
+          let sumX = 0, sumY = 0, count = 0;
+          for (let y = 0; y < dims.height; y++) {
+              if (!gridRef.current[y]) continue;
+              for (let x = 0; x < dims.width; x++) {
+                  const c = gridRef.current[y][x];
+                  if (c && (c.type === 'tendril' || c.type === 'source')) {
+                      sumX += x; sumY += y; count++;
+                  }
               }
           }
+          bloomCenterRef.current = count > 0
+              ? { x: Math.floor(sumX / count), y: Math.floor(sumY / count) }
+              : { x: Math.floor(dims.width / 2), y: Math.floor(dims.height / 2) };
       }
-      bloomCenterRef.current = count > 0
-          ? { x: Math.floor(sumX / count), y: Math.floor(sumY / count) }
-          : { x: Math.floor(dims.width / 2), y: Math.floor(dims.height / 2) };
 
       let maxDist = 0;
       const cx = bloomCenterRef.current.x;
@@ -2752,16 +2777,19 @@ const GOLSurvival = () => {
                  <span className="text-right text-[10px] text-white/80 tabular-nums">{s.fmt(s.v)}</span>
                </div>
              ))}
-             {/* Grid toggle */}
+             {/* Grid toggle — pill switch, dot stays inside the track at both ends */}
              <label className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px] cursor-pointer select-none">
                <span className="uppercase tracking-[0.18em] text-[#7c8898]">grid</span>
                <button
                  type="button"
                  onClick={() => setShowGrid(v => !v)}
-                 className={`relative w-9 h-4 rounded-full transition-colors ${showGrid ? 'bg-orange-400/70' : 'bg-white/10'}`}
+                 className={`relative w-10 h-5 rounded-full transition-colors ${showGrid ? 'bg-orange-400/70' : 'bg-white/10'}`}
                  aria-pressed={showGrid}
                >
-                 <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${showGrid ? 'translate-x-[18px]' : 'translate-x-0.5'}`}></span>
+                 <span
+                   className="absolute top-[3px] w-3.5 h-3.5 rounded-full bg-white transition-[left] duration-150"
+                   style={{ left: showGrid ? '23px' : '3px' }}
+                 ></span>
                </button>
                <span className="text-right text-[10px] text-white/80 tabular-nums">{showGrid ? 'on' : 'off'}</span>
              </label>
