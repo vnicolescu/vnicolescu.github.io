@@ -2036,6 +2036,7 @@ const GOLSurvival = () => {
           const expectedH = gridDimensions.current.height * cs;
           // Hysteresis of 2 cells in either direction to avoid jitter.
           if (Math.abs(w - expectedW) >= cs * 2 || Math.abs(h - expectedH) >= cs * 2) {
+              console.log(`%c[resize-poll] mismatch: parent=${w}x${h}, expected=${expectedW}x${expectedH} (grid=${gridDimensions.current.width}x${gridDimensions.current.height} cs=${cs}) — scheduling re-init`, 'color: yellow; font-weight: bold');
               lastInitW = w;
               lastInitH = h;
               scheduleResize();
