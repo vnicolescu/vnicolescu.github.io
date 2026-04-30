@@ -39,12 +39,80 @@
   - **Status:** Work-in-progress, simulation remains unstable. Branching and overall stability need further debugging.
   - **Next:** Stabilize simulation, refine branching, implement path optimization/reabsorption.
 
-- **[Date: 2024-06-09]**: Survival Branching Robustness & Signal Propagation Fix (Merged)
-  - **Feature:** Signals now reliably propagate through branch points, enabling true tree-like and neural network growth.
-  - **Improvements:**
-    - Fixed coordinate mismatch bug in branch signal propagation.
-    - Added approximate matching for branch points (robust to grid/rounding errors).
-    - Enhanced logging and code comments for future debugging and maintainability.
-    - Confirmed stable survival, food, and energy mechanics.
-    - All UI controls and visual feedback working as intended.
-  - **Status:** Stable baseline for GOL Survival simulation with robust branching and resource mechanics.
+- **2024-06-10**: Survival + Branching Mechanics Stabilized (Branch: `feature/survival-mechanics-wip`)
+  - **Feature:** Robust branch signal propagation and survival mechanics finalized.
+  - **Achievements:**
+    - Fixed bug where signals would not propagate into new branches due to coordinate mismatches.
+    - Added approximate matching for branch points, making branching robust to minor grid or floating-point errors.
+    - Confirmed stable, tree-like and neural network growth patterns with signals propagating through all branches.
+    - Survival mechanics (energy, food, fading, reabsorption) fully functional and visually clear.
+    - UI controls and visual feedback confirmed working as intended.
+    - Improved code comments and logging for future maintainability.
+  - **Status:** Stable baseline for further enhancements (e.g., path optimization, environmental influences).
+  - **Next:** Merge to main, consider milestone tag, and plan next feature set.
+
+- **[Date Placeholder - e.g., 2024-06-11]**: Refined Survival Mechanics & Debugging
+  - **Feature:** Enhanced resource reabsorption, collision handling, UI, and stability for `GOLSurvival.jsx`.
+  - **Achievements:**
+    - **Reabsorption:**
+      - Implemented tip-first cell removal for `reabsorbing` state, returning energy (`CELL_ENERGY_COST`) per cell.
+      - Added `BLOCKED_REABSORB_DELAY`: tendrils blocked for this duration transition to `reabsorbing`.
+      - Added `autoReabsorbCheck`: sources below `reabsorbThreshold` mark their tendrils for reabsorption.
+      - Energy bars now display a "+" indicator when the source is actively reabsorbing.
+    - **Collision & Alliance:**
+      - `handleTendrilCollision` now marks only the *moving* tendril as `fading` (allowing parent/siblings to continue).
+      - Initial `formAllianceBetweenSources` implemented: pools energy into one source, deactivates the other upon collision (simple merge, BFS path pruning pending).
+    - **UI & State:**
+      - Added `reabsorbThreshold` slider (0.05-0.5).
+      - Adjusted Pulse Speed slider range (5-60, default 20) and Signal Frequency (1-30, default 10).
+      - Added a Reset button.
+      - Fixed state update issues causing simulation resets when sliders were adjusted.
+      - Energy bars now show raw energy value alongside percentage.
+    - **Stability:**
+      - Resolved multiple `ReferenceError` issues related to function hoisting/declaration order and state variable access (`reabsorbThreshold`, `safeExecute`).
+      - Made `verifyPathIntegrity` non-fatal: tendrils failing checks are marked `reabsorbing` instead of triggering a cascade failure.
+  - **Status:** Simulation is more stable, reabsorption mechanics are active, basic alliance logic is in place. Spontaneous death issue seems resolved but needs monitoring.
+  - **Next:** Implement BFS/A* path pruning for alliances, consider midpoint source spawning, further debug any remaining stability or behavioural quirks.
+
+- **[Date Placeholder - e.g., 2024-06-11]**: Spontaneous Death Debugging Summary
+  - **Issue:** Entire simulation colony occasionally stops growing and fades prematurely, despite high source energy.
+  - **Potential Causes:**
+    1.  **`verifyPathIntegrity` False Positives:** Logic might incorrectly flag root tendrils as disconnected from source, triggering reabsorption cascade (primary suspect).
+    2.  **Accidental Source Deactivation:** Unintended state changes setting `source.isActive` to `false`.
+    3.  **State Corruption:** Residual bugs from initialization, resize, or state updates leading to invalid grid/tendril data.
+    4.  **Growth Blocking:** Overly restrictive `tryGrowTendril` logic trapping all tendrils.
+  - **Troubleshooting Status:**
+    - `verifyPathIntegrity` modified to be non-fatal (marks `reabsorbing`, logs specific error) - **Issue persists**.
+    - Fixed state initialization/update errors (`safeExecute`, `reabsorbThreshold`, hoisting) - **Issue persists**.
+    - Growth logic made less restrictive - **Issue persists**.
+    - Increased energy, added UI feedback (raw energy, '+' indicator) - Helps visibility, doesn't solve root cause.
+  - **Next Steps:** Start fresh debugging session focused on:
+    1.  Adding targeted logging within `verifyPathIntegrity` to capture source/root tendril states *just before* the failure check.
+    2.  Confirming if the failure warning (`Integrity fail: root...`) appears in console before death.
+    3.  Analyzing the exact mechanism causing the root tendril's `path[0]` to mismatch the source coordinates.
+
+- **[Date Placeholder - e.g., 2024-06-12]**: Senescence Fix, Reabsorption & Alliance V1
+  - **Feature:** Resolved colony senescence, implemented timed reabsorption, basic alliance merge, and food boost for `GOLSurvival.jsx`.
+  - **Achievements:**
+    - Fixed senescence by allowing signals to propagate through `blocked` tendrils (except fading/reabsorbing), keeping the network active.
+    - Implemented `blockedFrame` tracking: branches `blocked` for `BLOCKED_REABSORB_DELAY` now transition to `reabsorbing`.
+    - Implemented basic `formAllianceBetweenSources`: on collision, the higher-energy source absorbs the lower-energy one, merging energy pools.
+    - Increased `FOOD_ENERGY_PER_CELL` to 200.
+  - **Status:** Simulation runs longer without freezing. Reabsorption is active. Basic alliance prevents instant death but needs refinement (path pruning, potential new source).
+  - **Next:** Refine alliance mechanism (path optimization, shared growth point), potentially implement periodic "wake-up" checks for blocked tendrils, monitor stability.
+
+- **2024-06-12**: Visual Update – Background & Grid Color
+  - **Feature:** Updated simulation background and grid overlay color to `#060C14` for improved visual clarity and aesthetic alignment.
+  - **Achievements:**
+    - Changed `BACKGROUND_COLOR` constant to `#060C14`.
+    - Updated grid overlay lines to use the same color.
+    - Main container now uses the new background color via inline style.
+  - **Status:** Visual baseline improved. Ready for further color and style enhancements.
+
+- **2024-06-12**: Pulse Glow Effect Enhancement
+  - **Feature:** Added a glowing white pulse with a 3-cell trailing tail to the signal visualization in `GOLSurvival.jsx`.
+  - **Achievements:**
+    - Pulse tip glows white at 100% opacity with strong glow.
+    - Tail of up to 3 cells behind the tip, with opacities and glow at 75%, 50%, and 25% respectively.
+    - Both fill and shadow (glow) follow these opacities for a smooth, energetic effect.
+  - **Status:** Pulse visualization is now more dynamic and visually clear. Ready for further visual polish.

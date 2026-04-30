@@ -1,37 +1,52 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 // --- Simulation Constants (Survival Focus) ---
-const CELL_SIZE = 4;
+const BASE_CELL_SIZE = 12; // Default cell pixel size — slider can change this dynamically
+const DEFAULT_GROWTH_FACTOR = 3; // Default cells advanced per pulse at each active tip
 const NUM_SOURCES = 2;
 const GROWTH_STEP = 1; // Cells per growth event
-const DEFAULT_SIGNAL_FREQUENCY = 1.0; // Hz
-const DEFAULT_BRANCH_CHANCE = 0.10;
-const DEFAULT_PULSE_SPEED = 2.0; // Base cells per second
+const DEFAULT_SIGNAL_FREQUENCY = 22.0; // Hz – baseline, slider mid
+const DEFAULT_BRANCH_CHANCE = 0.20;
+const DEFAULT_PULSE_SPEED = 22.0; // Baseline (slider mid)
 const MAX_CELL_AGE = 1200; // Frames for full color/conductivity transition
 const MIN_CONDUCTIVITY = 0.8;
-const MAX_CONDUCTIVITY = 4.0;
+const MAX_CONDUCTIVITY = 12.0; // Increased conductivity range
 const PULSE_VISIBILITY = 2.0; // Brightness multiplier
 const PATH_INTEGRITY_CHECK_INTERVAL = 50; // Frames (less frequent)
 const SOURCE_REGENERATION_DELAY = 150; // Frames
 const MIN_PATH_LENGTH_FOR_BRANCHING = 5;
 
 // --- NEW: Survival Mechanics Constants ---
-const INITIAL_SOURCE_ENERGY = 500; // Starting energy units per source
+const INITIAL_SOURCE_ENERGY = 8000; // Starting energy units per source (doubled again)
 const CELL_ENERGY_COST = 1; // Energy cost per cell grown/branched
 const FOOD_PELLET_SIZE = 4; // NxN size
 const FOOD_DENSITY = 0.0005; // Chance per cell per frame to spawn food
-const FOOD_ENERGY_PER_CELL = 50; // Energy gained per food cell consumed
+const FOOD_ENERGY_PER_CELL = 200; // Energy gained per food cell consumed – increased for more meaningful boost
 const REABSORPTION_FADE_SPEED = 0.005; // Faster fade for reabsorbed tendrils - SLOWED DOWN
 const STANDARD_FADE_SPEED = 0.002; // Slower fade for disconnected tendrils - SLOWED DOWN
+const REABSORB_STEP_INTERVAL = 3; // frames between removing tail cells during reabsorb
+const BLOCKED_REABSORB_DELAY = 180; // frames (~3s) until blocked branch reabsorbs
+
+// --- Bloom / Sporulation lifecycle ---
+const STASIS_THRESHOLD_FRAMES = 240;       // ~4s of zero growing tendrils → trigger retraction
+const RETRACTION_FRAMES = 200;              // slower implosion — reads as reconfiguring, not destruction
+const BLOOM_DURATION_FRAMES = 220;          // ~3.7s for the spiral flower to grow + pulsate
+const SPORE_TRAVEL_FRAMES = 100;            // ~1.7s for spores to fly out and land
+const SPORE_DISTANCE_FRACTION = 0.32;       // fraction of min(grid dim) the spores travel
+const BLOOM_SPIRAL_ARMS = 3;                // number of spiral arms — rosette symmetry
+const BLOOM_SPIRAL_TURNS = 1.5;             // revolutions per arm — tighter, more flower-like
+const BLOOM_RADIUS_FRACTION = 0.21;         // flower radius as fraction of min(grid dim) — compact
+const BLOOM_INFLORESCENCE_STEP = Math.PI;   // angular spacing between perpendicular petals along each arm
+const BLOOM_INFLORESCENCE_LEN = 2;          // uniform petal length on each side of the spiral
 
 // --- Colors ---
-const SOURCE_COLOR = '#6366F1'; // Indigo Flame
-const BACKGROUND_COLOR = '#000000';
-const OLD_TENDRIL_COLOR = '#1E3A8A'; // Navy Blue
-const YOUNG_TENDRIL_COLOR = '#F59E0B'; // Solar Amber
+const SOURCE_COLOR = '#f4ede3'; // Light cream – source / attractor
+const BACKGROUND_COLOR = '#060C14'; // Deep blue‑black (updated)
+const OLD_TENDRIL_COLOR = '#2363a3';  // Senescent blue (updated)
+const YOUNG_TENDRIL_COLOR = '#ff9c32'; // Leading edge orange
 const SIGNAL_COLOR = '#FFFFFF'; // White
 const FOOD_COLOR = '#10B981'; // Emerald Green
-const FADING_COLOR = '#4B5563'; // Gray for standard fade
+const FADING_COLOR = '#43678c'; // Dead blue for standard fade
 const REABSORBING_COLOR_START = '#1E3A8A'; // Start reabsorb from old color
 const REABSORBING_COLOR_END = '#F59E0B'; // Fade towards young color before disappearing
 
@@ -96,7 +111,7 @@ const interpolateColors = (color1Hex, color2Hex, t) => {
         // Interpolate RGB values
         const r = Math.round(r1 + (r2 - r1) * clampedT);
         const g = Math.round(g1 + (g2 - g1) * clampedT);
-        const b = Math.round(b1 + (b1 - b1) * clampedT);
+        const b = Math.round(b1 + (b2 - b1) * clampedT); // FIX: use b2
 
         // Convert back to hex with safety checks
         return `#${Math.max(0, Math.min(255, r)).toString(16).padStart(2, '0')}${
@@ -133,38 +148,58 @@ const GOLSurvival = () => {
   const [error, setError] = useState(null);
   const gridDimensions = useRef({ width: 0, height: 0 });
 
+  // --- Cell size + grid display ---
+  const [cellSize, setCellSize] = useState(BASE_CELL_SIZE);
+  const [showGrid, setShowGrid] = useState(true);
+  const cellSizeRef = useRef(BASE_CELL_SIZE);
+  const showGridRef = useRef(true);
+
+  // --- Bloom lifecycle refs ---
+  const phaseRef = useRef('normal'); // 'normal' | 'retracting' | 'blooming' | 'sporulating'
+  const phaseStartFrameRef = useRef(0);
+  const stasisCounterRef = useRef(0);
+  const lastGrowthFrameRef = useRef(0); // last frame any tendril successfully grew (path push)
+  const bloomCenterRef = useRef({ x: 0, y: 0 });
+  const retractionMaxDistRef = useRef(1); // max cell distance from bloom center at retraction start
+  const sporesRef = useRef([]); // [{ startX, startY, finalX, finalY }]
+
   // --- State for Simulation Parameters ---
-  const [signalFrequency, setSignalFrequency] = useState(1.5); // Default 1.5 Hz
+  const [signalFrequency, setSignalFrequency] = useState(DEFAULT_SIGNAL_FREQUENCY);
   const [branchChance, setBranchChance] = useState(DEFAULT_BRANCH_CHANCE);
-  const [pulseSpeed, setPulseSpeed] = useState(7.0); // Increased default speed again to 7.0
+  const [pulseSpeed, setPulseSpeed] = useState(DEFAULT_PULSE_SPEED);
+  const [growthFactor, setGrowthFactor] = useState(DEFAULT_GROWTH_FACTOR);
   const [directionWeights, setDirectionWeights] = useState([
     0.8, 2.5, 0.8,  // Forward-left, Forward, Forward-right
     0.1, 0, 0.1,    // Left, Center, Right
     0, 0, 0         // Backward-left, Backward, Backward-right
   ]);
+  // Threshold (0.05‑0.5) below which auto‑reabsorption triggers
+  const [reabsorbThreshold, setReabsorbThreshold] = useState(0.25);
   // Maybe add controls for energy cost, food density later
 
   // --- IMPORTANT: Function declarations for functions used in circular dependencies ---
   // These need to be declared before they're used
 
   // Get Tendril by ID (O(1) lookup) - MUST BE DECLARED EARLY
-  const getTendrilById = (id) => {
+  // Memoized with empty deps so the identity is stable across renders. Otherwise
+  // every state change (e.g., grid toggle) cascades through every useCallback
+  // that lists this in its deps, regenerating `render`, which triggers the mount
+  // useEffect's cleanup → full simulation restart.
+  const getTendrilById = useCallback((id) => {
     if (!id) return null;
     return tendrilsRef.current && tendrilsRef.current.get ? tendrilsRef.current.get(id) : null;
-  };
+  }, []);
 
-  // Get Source by ID - MUST BE DECLARED EARLY
-  const getSourceById = (id) => {
+  const getSourceById = useCallback((id) => {
     if (!id) return null;
     return sourcesRef.current && Array.isArray(sourcesRef.current) ?
       sourcesRef.current.find(s => s && s.id === id) : null;
-  };
+  }, []);
 
-  // Check bounds - MUST BE DECLARED EARLY
-  const isWithinBounds = (x, y) => {
+  const isWithinBounds = useCallback((x, y) => {
     const dims = gridDimensions.current || { width: 0, height: 0 };
     return x >= 0 && x < dims.width && y >= 0 && y < dims.height;
-  };
+  }, []);
 
   // Handle Food Collision - MUST BE DECLARED EARLY
   const handleFoodCollision = (tendril, foodCellCoord) => {
@@ -241,46 +276,43 @@ const GOLSurvival = () => {
     }
   };
 
-  // Handle Tendril Collision - MUST BE DECLARED EARLY
-  const handleTendrilCollision = (tendril1, tendril2) => {
-    if (!tendril1 || !tendril2 || !gridRef.current) return;
+  // Handle Tendril Collision — cooperative merge (Physarum-style).
+  // The moving tendril stops here and becomes a permanent bridge into the other network.
+  // Both source colonies stay alive and keep growing/pulsing; they're now allies.
+  const handleTendrilCollision = (movingTendril, staticTendril) => {
+    if (!movingTendril || !staticTendril || !gridRef.current) return;
 
-    if (tendril1.sourceId !== tendril2.sourceId) {
-      console.log(`%cCollision detected: Tendril ${tendril1.id} (Source ${tendril1.sourceId}) and Tendril ${tendril2.id} (Source ${tendril2.sourceId})`, 'color: yellow');
+    if (movingTendril.sourceId !== staticTendril.sourceId) {
+      console.log(`%cMerge: ${movingTendril.id} (${movingTendril.sourceId}) bridged into ${staticTendril.id} (${staticTendril.sourceId})`, 'color: cyan');
 
-      tendril1.state = 'blocked';
-      tendril2.state = 'blocked';
+      // Caller (growth path) sets state = 'connected' on the moving tendril after this returns.
+      // Form alliance — both sources stay active, energy pools stay independent.
+      formAllianceBetweenSources(movingTendril.sourceId, staticTendril.sourceId, movingTendril.path[movingTendril.path.length-1]);
 
-      const collisionPoint = tendril1.path && tendril1.path.length ?
-        tendril1.path[tendril1.path.length - 1] : null;
-
+      const collisionPoint = movingTendril.path[movingTendril.path.length - 1];
       if (collisionPoint && isWithinBounds(collisionPoint.x, collisionPoint.y)) {
-        const gridRow = gridRef.current[collisionPoint.y];
-        if (gridRow) {
-          const cell = gridRow[collisionPoint.x];
-          if (cell) {
-            cell.isConnectionPoint = true;
-          }
-        }
+        const cell = gridRef.current[collisionPoint.y][collisionPoint.x];
+        if (cell) cell.isConnectionPoint = true;
       }
     }
   };
 
   // Ref for current simulation parameters
-  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights });
+  const simParamsRef = useRef({ signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor });
   useEffect(() => {
-    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights };
-  }, [signalFrequency, branchChance, pulseSpeed, directionWeights]);
+    simParamsRef.current = { signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor };
+  }, [signalFrequency, branchChance, pulseSpeed, directionWeights, reabsorbThreshold, growthFactor]);
 
   // --- Core Simulation Logic ---
 
   // Utility: Safe execution wrapper
   const safeExecute = useCallback((fn, context, ...args) => {
-    if (error) return null;
+    if (error || typeof fn !== 'function') return null;
     try {
       return fn.apply(context, args);
     } catch (e) {
-      console.error(`Simulation error in ${fn.name || 'anonymous function'}:`, e.message, e.stack);
+      const fnName = fn && fn.name ? fn.name : 'anonymous';
+      console.error(`Simulation error in ${fnName}:`, e.message, e.stack);
       setError(`Runtime Error: ${e.message}`);
       if (animationFrameIdRef.current) {
         window.cancelAnimationFrame(animationFrameIdRef.current);
@@ -355,6 +387,7 @@ const GOLSurvival = () => {
                   isActive: true, // Can this source emit signals?
                   lastActivityFrame: 0, // For regeneration logic
                   state: 'active', // 'active', 'inactive', 'regenerating'
+                  alliedWith: new Set(), // Source IDs this source has merged with
               };
               sourcesRef.current.push(newSource);
 
@@ -390,7 +423,9 @@ const GOLSurvival = () => {
               opacity: 1,
               isBranch: false,
               parentId: null,
+              blockedFrame: null, // Track when it became blocked
               creationFrame: frameCountRef.current,
+              growthRemaining: 0, // NEW: cells left to grow in current pulse
           };
           tendrilsRef.current.set(tendrilId, newTendril);
 
@@ -531,30 +566,37 @@ const GOLSurvival = () => {
       let emittedCount = 0;
       sourcesRef.current.forEach(source => {
           // Only emit from active sources with energy
-          if (!source.isActive || source.energy <= 0 || source.state !== 'active') {
+          // More robust source check
+          if (!source || !source.id || !source.isActive || source.energy <= 0 || source.state !== 'active') {
               return;
           }
 
           // Find root tendrils (starting at the source) belonging to this source
           tendrilsRef.current.forEach(tendril => {
+               // More robust tendril check
+              if (!tendril || !tendril.id || !tendril.path || tendril.path.length === 0) {
+                  return;
+              }
+
               if (tendril.sourceId === source.id &&
-                  tendril.path.length > 0 &&
+                  tendril.path.length > 0 && // Check path exists (redundant but safe)
                   tendril.path[0].x === source.x &&
                   tendril.path[0].y === source.y &&
-                  (tendril.state === 'growing' || tendril.state === 'connected') && // Can propagate if growing or stable
+                  (tendril.state === 'growing' || tendril.state === 'connected' || tendril.state === 'blocked') && // Can propagate if growing or stable
                   tendril.signalState === 'idle')
               {
                   // console.log(`  Emitting for Tendril ${tendril.id} from Source ${source.id}`);
                   tendril.signalState = 'propagating';
                   tendril.signalPosition = 0;
                   tendril.fractionalPos = 0;
+                  tendril.growthRemaining = growthFactor; // reset growth quota for this pulse
                   emittedCount++;
               }
           });
       });
       // if (emittedCount > 0) console.log(`  Emitted ${emittedCount} signals.`);
 
-  }, []); // Dependencies: getSourceById? Maybe not needed if sourcesRef is up-to-date
+  }, [growthFactor]); // Dependencies: getSourceById? Maybe not needed if sourcesRef is up-to-date
 
   const propagateSignal = useCallback((deltaTime) => {
       const newlyReachedTips = new Set();
@@ -568,9 +610,39 @@ const GOLSurvival = () => {
           const pathLength = tendril.path.length;
 
           if (currentSignalPos >= pathLength - 1) {
-              // Signal already at the tip, mark for processing
-              signalsToUpdate.push({ tendrilId, nextState: 'reached_tip', nextPos: pathLength - 1, fractionalPos: pathLength -1 });
-              newlyReachedTips.add(tendrilId);
+              // We are at the tip. If growth quota remains, attempt one growth step.
+              if (tendril.growthRemaining && tendril.growthRemaining > 0) {
+                  const source = getSourceById(tendril.sourceId);
+                  if (source) {
+                      const grew = tryGrowTendril(tendril, source);
+                      if (grew) {
+                          // Only real new biomass counts toward "alive". Collision-merges
+                          // flip state to 'connected' and aren't new growth — those would
+                          // mask actual stasis on a saturated network.
+                          if (tendril.state === 'growing') {
+                              lastGrowthFrameRef.current = frameCountRef.current;
+                          }
+                          tendril.growthRemaining -= 1;
+                          // Let the signal sit on the brand‑new tip so it visually leads growth
+                          attemptBranching && attemptBranching(tendril, source);
+                          signalsToUpdate.push({
+                              tendrilId,
+                              nextState: 'propagating',
+                              nextPos: tendril.path.length - 1,
+                              fractionalPos: tendril.path.length - 1
+                          });
+                          return; // Skip the rest of this iteration
+                      } else {
+                          // Could not grow – block further attempts this pulse
+                          tendril.growthRemaining = 0;
+                      }
+                  } else {
+                      tendril.growthRemaining = 0;
+                  }
+              }
+
+              // No growth remaining – finish the pulse
+              signalsToUpdate.push({ tendrilId, nextState: 'idle', nextPos: pathLength - 1, fractionalPos: pathLength -1 });
               return;
           }
 
@@ -581,6 +653,7 @@ const GOLSurvival = () => {
               return;
           }
 
+          // Retrieve the grid cell at the current path point
           const cell = gridRef.current[currentPathPoint.y]?.[currentPathPoint.x];
           if (!cell || cell.type === 'empty') {
               console.warn(`Signal for ${tendrilId} on invalid grid cell type: ${cell?.type} at (${currentPathPoint.x}, ${currentPathPoint.y}). Stopping signal.`);
@@ -599,6 +672,19 @@ const GOLSurvival = () => {
 
           // Check for branch points between current and new integer position
           if (newIntPos > currentSignalPos) {
+              // Refresh aging on cells the pulse just traversed — active paths
+              // stay young and orange; abandoned paths age toward blue. Real
+              // Physarum networks look like this: bright arteries, dim capillaries.
+              const refreshFrame = frameCountRef.current;
+              const lastRefreshIdx = Math.min(newIntPos, pathLength - 1);
+              for (let pos = currentSignalPos; pos <= lastRefreshIdx; pos++) {
+                  const p = tendril.path[pos];
+                  if (!p) continue;
+                  const c = gridRef.current[p.y]?.[p.x];
+                  if (c && c.type !== 'empty' && c.type !== 'food') {
+                      c.creationFrame = refreshFrame;
+                  }
+              }
               // Specifically look for branch points that need signal propagation
               checkForBranchPoints(tendril, currentSignalPos, newIntPos);
           }
@@ -629,7 +715,12 @@ const GOLSurvival = () => {
       });
 
       return newlyReachedTips;
-  }, [isWithinBounds, getTendrilById]);
+  // tryGrowTendril and attemptBranching are plain function declarations (not memoized)
+  // and would give propagateSignal a fresh identity every render — cascading to render
+  // and triggering a full simulation restart on any state change. Reach them via closure
+  // at call time (their bodies only read refs, so closure resolution is safe).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWithinBounds, getTendrilById, getSourceById, growthFactor]);
 
   // New helper function to check for branch points
   const checkForBranchPoints = (tendril, startPos, endPos) => {
@@ -680,16 +771,35 @@ const GOLSurvival = () => {
               return;
           }
 
-          // --- Attempt Growth ---
-          // console.log(`  -> Attempting growth for Tendril ${tendrilId} (Source Energy: ${source.energy.toFixed(0)})`);
-          const grew = tryGrowTendril(tendril, source); // Pass source for energy check
+          // --- Growth Loop controlled by GROWTH_FACTOR ---
+          for (let step = 0; step < growthFactor; step++) {
+              const grew = tryGrowTendril(tendril, source);
 
-          // --- Attempt Branching (only if growth occurred) ---
-          if (grew && tendril.state === 'growing') { // Ensure tendril is still growing after the attempt
-               attemptBranching(tendril, source); // Pass source for energy check
+              if (!grew) {
+                  // Stop if blocked or could not grow further
+                  break;
+              }
+              // Only count real new biomass (state stays 'growing'); skip collision-merges.
+              if (tendril.state === 'growing') {
+                  lastGrowthFrameRef.current = frameCountRef.current;
+              }
+
+              // Visually push the pulse to the new tip for each successful cell grown
+              tendril.signalPosition = tendril.path.length - 1;
+              tendril.signalState = 'propagating';
+              tendril.fractionalPos = tendril.path.length - 1;
+
+              // Optionally attempt branching after each growth step
+              if (tendril.state === 'growing') {
+                  attemptBranching(tendril, source);
+              }
           }
+
+          // After completing growthFactor steps (or blocking), stop the pulse until the next emission
+          // NOTE: We no longer force‑reset the pulse to 'idle' here so that the next frame can
+          // create a temporary visual lead.
       });
-  }, [getTendrilById, getSourceById /* Add tryGrowTendril, attemptBranching dependencies later */]);
+  }, [getTendrilById, getSourceById, growthFactor]);
 
   // Helper: Get Neighbors (adapted for survival)
   const getNeighbors = (x, y, currentSourceId) => {
@@ -779,7 +889,8 @@ const GOLSurvival = () => {
      return false;
   };
 
-  const tryGrowTendril = useCallback((tendril, source) => {
+  // Hoisted declaration so it can be referenced above its definition
+  function tryGrowTendril(tendril, source) {
       if (tendril.state !== 'growing' && tendril.state !== 'connected') return false;
       if (source.energy < CELL_ENERGY_COST) {
           tendril.state = 'blocked'; // Block if source can't afford growth
@@ -838,7 +949,6 @@ const GOLSurvival = () => {
 
       if (validEmptyNeighbors.length === 0) {
           tendril.state = 'blocked'; // No valid empty space
-          // console.log(`Tendril ${tendril.id} blocked - no valid empty neighbors.`);
           return false;
       }
 
@@ -885,19 +995,20 @@ const GOLSurvival = () => {
       // Filter out neighbors that pose a high collision risk (adjacent to self)
       const safeWeightedNeighbors = weightedNeighbors.filter(option => !isCollisionRisky(option.item));
 
-      if (safeWeightedNeighbors.length === 0) {
-          // If only risky neighbors are left, maybe pick one anyway or block?
-          // For now, let's block if only risky options remain.
-          // console.log(`Tendril ${tendril.id} blocked - only risky neighbors available.`);
-          tendril.state = 'blocked';
-          return false;
-          // Alternative: const nextCell = weightedRandomSelect(weightedNeighbors); // Pick from original list
+      // NEW: Fallback strategies to reduce premature blocking
+      let nextCell = null;
+      if (safeWeightedNeighbors.length > 0) {
+          nextCell = weightedRandomSelect(safeWeightedNeighbors);
+      } else if (weightedNeighbors.length > 0) {
+          // All options were risky, but still allow movement to avoid dead‑ends
+          nextCell = weightedRandomSelect(weightedNeighbors);
+      } else {
+          // No weighted neighbors (all weights zero) – choose any valid empty neighbor randomly
+          nextCell = validEmptyNeighbors[getRandomInt(validEmptyNeighbors.length)];
       }
 
-      const nextCell = weightedRandomSelect(safeWeightedNeighbors);
       if (!nextCell) {
           tendril.state = 'blocked'; // Selection failed
-          // console.log(`Tendril ${tendril.id} blocked - weighted selection failed.`);
           return false;
       }
 
@@ -916,10 +1027,10 @@ const GOLSurvival = () => {
       gridCell.creationFrame = frameCountRef.current;
 
       return true; // Growth occurred
+  }
 
-  }, [isWithinBounds, simParamsRef, handleFoodCollision, handleTendrilCollision, getTendrilById /* Add more deps */]);
-
-  const attemptBranching = useCallback((parentTendril, source) => {
+  // Hoisted declaration – can be referenced earlier in propagateSignal
+  function attemptBranching(parentTendril, source) {
       // Add more logging to debug branching
       try {
           // Check basic conditions
@@ -999,6 +1110,7 @@ const GOLSurvival = () => {
               isBranch: true,
               parentId: parentTendril.id,
               creationFrame: frameCountRef.current,
+              growthRemaining: 0, // NEW: cells left to grow in current pulse
           };
 
           // Add to tendrils collection
@@ -1035,7 +1147,7 @@ const GOLSurvival = () => {
           console.error("Error in attemptBranching:", err);
           return false;
       }
-  }, [simParamsRef, getNeighbors, getTendrilById]);
+  }
 
   const triggerPathOptimization = useCallback((sourceId1, sourceId2, connectionPoint) => {
       // TODO: Implement path optimization logic (potentially complex)
@@ -1059,6 +1171,17 @@ const GOLSurvival = () => {
       if (debugFadingFull && (fadingCount > 0 || reabsorbingCount > 0)) {
           console.log(`%cFADING STATUS: ${fadingCount} fading, ${reabsorbingCount} reabsorbing tendrils`, 'color: purple');
       }
+
+      // NEW: convert long‑blocked branches to reabsorbing
+      tendrilsRef.current.forEach(t => {
+          if (t.state === 'blocked' && t.isBranch && t.blockedFrame !== null) {
+              const blockedDuration = frameCountRef.current - t.blockedFrame;
+              if (blockedDuration >= BLOCKED_REABSORB_DELAY) {
+                  t.state = 'reabsorbing';
+                  console.log(`%cBranch ${t.id} has been blocked for ${blockedDuration} frames – now reabsorbing`, 'color: purple');
+              }
+          }
+      });
 
       tendrilsRef.current.forEach((tendril, tendrilId) => {
           if (tendril.state === 'fading' || tendril.state === 'reabsorbing') {
@@ -1224,7 +1347,8 @@ const GOLSurvival = () => {
                            // Check if tendril path starts at source
                            const firstPoint = tendril.path[0];
                            if (!firstPoint || firstPoint.x !== source.x || firstPoint.y !== source.y) {
-                               tendril.state = 'fading';
+                               console.warn(`Integrity fail: root ${tendril.id} lost origin (src ${source.id}). Marking reabsorbing.`);
+                               tendril.state = 'reabsorbing';
                                markedThisPass++;
                                changed = true;
                            }
@@ -1266,6 +1390,7 @@ const GOLSurvival = () => {
                   isBranch: false,
                   parentId: null,
                   creationFrame: frameCountRef.current,
+                  growthRemaining: 0, // NEW: cells left to grow in current pulse
               };
 
               tendrilsRef.current.set(tendrilId, newTendril);
@@ -1333,7 +1458,7 @@ const GOLSurvival = () => {
                console.log(`Grid cell counts:`, cellCounts);
            }
 
-           // Draw grid cells
+           // === First pass: Draw all cells (no glow, no grid) ===
            for (let y = 0; y < gridHeight; y++) {
                if (!gridRef.current[y] || !Array.isArray(gridRef.current[y])) continue;
 
@@ -1356,81 +1481,64 @@ const GOLSurvival = () => {
 
                        case 'food':
                            drawColor = FOOD_COLOR;
-                           // Make food pulse slightly for visibility
-                           const pulseAmount = Math.sin(frameCountRef.current * 0.1) * 0.3;
-                           cellOpacity = 0.7 + (isNaN(pulseAmount) ? 0 : pulseAmount);
+                           // Constant opacity to avoid flicker
+                           cellOpacity = 1.0;
 
-                           // Draw food with extra visibility
                            context.globalAlpha = cellOpacity;
                            context.fillStyle = drawColor;
-
-                           // Draw slightly larger for better visibility
-                           const foodSize = CELL_SIZE * 1.5;
-                           const offset = (foodSize - CELL_SIZE) / 2;
-                           context.fillRect(
-                               x * CELL_SIZE - offset,
-                               y * CELL_SIZE - offset,
-                               foodSize, foodSize
-                           );
-                           continue; // Skip the standard drawing for food
+                           // Standard cell-sized rectangle (glow added later)
+                           context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
+                           continue; // Skip further processing for food (no branch checks)
 
                        case 'tendril': {
                            // Extract basic info safely
                            const tendrilIds = (cell.tendrilId || '').split(',').filter(Boolean);
-
-                           // If we have no valid tendril IDs, treat as background
                            if (tendrilIds.length === 0) {
                                drawColor = BACKGROUND_COLOR;
                                cellOpacity = 0;
                                break;
                            }
-
-                           // Get the first tendril (primary owner)
                            const tendril = getTendrilById(tendrilIds[0]);
-
                            if (tendril) {
                                // Base opacity from tendril
                                cellOpacity = tendril.opacity || 1.0;
-
                                // Calculate age and determine color
                                const creationFrame = cell.creationFrame || 0;
                                const age = calculateAge(creationFrame, frameCountRef.current);
-
                                if (tendril.state === 'reabsorbing') {
                                    // Use opacity for interpolation
                                    const t = tendril.opacity || 0;
                                    drawColor = interpolateColors(REABSORBING_COLOR_END, REABSORBING_COLOR_START, t);
                                } else if (tendril.state === 'fading') {
-                                   drawColor = FADING_COLOR;
+                                   // Lazy-init fadeStartFrame on first render in fading state, then
+                                   // smoothly interpolate from current age-color to FADING_COLOR
+                                   // over ~1.5s. Combined with the existing opacity fade, gives
+                                   // a gentle senescence instead of an abrupt blue jump.
+                                   if (!tendril.fadeStartFrame) tendril.fadeStartFrame = frameCountRef.current;
+                                   const fadeElapsed = frameCountRef.current - tendril.fadeStartFrame;
+                                   const colorT = Math.min(fadeElapsed / 90, 1);
+                                   const ageColor = getColorFromAge(age);
+                                   drawColor = interpolateColors(ageColor, FADING_COLOR, colorT);
                                } else {
                                    // Normal growing/connected/blocked state
                                    drawColor = getColorFromAge(age);
                                }
-
                                // Highlight branch points
                                if (cell.isBranchPoint) {
                                    try {
-                                       // Safety check for valid color
                                        if (typeof drawColor === 'string' && drawColor.startsWith('#')) {
                                            const [r, g, b] = parseHex(drawColor);
-
-                                           // Brighten by 20% safely
                                            const brightenFactor = 1.2;
                                            const r2 = Math.min(255, Math.floor(r * brightenFactor));
                                            const g2 = Math.min(255, Math.floor(g * brightenFactor));
                                            const b2 = Math.min(255, Math.floor(b * brightenFactor));
-
-                                           drawColor = `#${r2.toString(16).padStart(2, '0')}${
-                                               g2.toString(16).padStart(2, '0')}${
-                                               b2.toString(16).padStart(2, '0')}`;
+                                           drawColor = `#${r2.toString(16).padStart(2, '0')}${g2.toString(16).padStart(2, '0')}${b2.toString(16).padStart(2, '0')}`;
                                        }
                                    } catch (colorErr) {
-                                       console.error("Error brightening branch point:", colorErr);
                                        // Fall back to original color
                                    }
                                }
                            } else {
-                               // Orphaned grid cell - display as background
                                drawColor = BACKGROUND_COLOR;
                                cellOpacity = 0;
                            }
@@ -1441,58 +1549,169 @@ const GOLSurvival = () => {
                    // Standard drawing for non-food cells
                    context.globalAlpha = cellOpacity;
                    context.fillStyle = drawColor;
-                   context.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+                   context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
                }
            }
 
-           // Reset global alpha
-           context.globalAlpha = 1.0;
+           // === Second pass: Draw grid lines (scales with cell size, optional) ===
+           // Line width scales sublinearly with cell size — at small sizes the grid
+           // disappears (no lines wider than the cells); at large sizes the spacing
+           // stays subtle rather than doubling with the cells.
+           const gridLineWidth = showGridRef.current
+               ? Math.min(3, Math.max(0, Math.floor(cellSizeRef.current / 4)))
+               : 0;
+           if (gridLineWidth > 0) {
+               context.globalAlpha = 1.0;
+               context.strokeStyle = '#060C14'; // Updated grid color
+               context.lineWidth = gridLineWidth;
 
-           // Draw signals
-           context.fillStyle = SIGNAL_COLOR;
+               // Draw vertical lines only between active cells
+               for (let gx = 1; gx < gridWidth; gx++) {
+                   for (let gy = 0; gy < gridHeight; gy++) {
+                       const leftCell = gridRef.current[gy][gx - 1];
+                       const rightCell = gridRef.current[gy][gx];
+                       if (leftCell.type !== 'empty' || rightCell.type !== 'empty') {
+                           context.beginPath();
+                           context.moveTo(gx * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.lineTo(gx * cellSizeRef.current, (gy + 1) * cellSizeRef.current);
+                           context.stroke();
+                       }
+                   }
+               }
+
+               // Draw horizontal lines only between active cells
+               for (let gy = 1; gy < gridHeight; gy++) {
+                   for (let gx = 0; gx < gridWidth; gx++) {
+                       const topCell = gridRef.current[gy - 1][gx];
+                       const bottomCell = gridRef.current[gy][gx];
+                       if (topCell.type !== 'empty' || bottomCell.type !== 'empty') {
+                           context.beginPath();
+                           context.moveTo(gx * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.lineTo((gx + 1) * cellSizeRef.current, gy * cellSizeRef.current);
+                           context.stroke();
+                       }
+                   }
+               }
+           }
+
+           // === Third pass: Draw pulses (signals) on top of grid ===
            tendrilsRef.current.forEach(tendril => {
-               if (tendril && tendril.signalState === 'propagating' &&
+               if (
+                   tendril &&
+                   tendril.signalState === 'propagating' &&
                    tendril.signalPosition >= 0 &&
                    tendril.path && Array.isArray(tendril.path) &&
-                   tendril.signalPosition < tendril.path.length) {
+                   tendril.signalPosition < tendril.path.length
+               ) {
+                   // Draw the tip and up to 3 tail cells
+                   for (let tail = 0; tail <= 3; tail++) {
+                       const pos = tendril.signalPosition - tail;
+                       if (pos < 0) break;
+                       const coord = tendril.path[pos];
+                       if (!coord || !isWithinBounds(coord.x, coord.y)) continue;
 
-                   const signalCoord = tendril.path[tendril.signalPosition];
-                   if (signalCoord && isWithinBounds(signalCoord.x, signalCoord.y)) {
-                       // Draw signal with enhanced visibility
-                       const opacity = Math.min(1.0, (tendril.opacity || 1.0) * PULSE_VISIBILITY);
+                       // Opacity and glow for each tail segment
+                       let opacity = 1.0;
+                       let shadowBlur = 16;
+                       switch (tail) {
+                           case 0:
+                               opacity = 1.0; shadowBlur = 16; break; // Tip
+                           case 1:
+                               opacity = 0.75; shadowBlur = 10; break;
+                           case 2:
+                               opacity = 0.5; shadowBlur = 6; break;
+                           case 3:
+                               opacity = 0.25; shadowBlur = 3; break;
+                           default:
+                               opacity = 0; shadowBlur = 0;
+                       }
+                       // Multiply by tendril opacity in case it's fading
+                       opacity *= (tendril.opacity || 1.0);
+
+                       // Determine glow color based on underlying cell
+                       let glowColor = 'rgba(255,255,255,1)';
+                       const cellRef = isWithinBounds(coord.x, coord.y) ? gridRef.current[coord.y][coord.x] : null;
+                       if (cellRef) {
+                           switch (cellRef.type) {
+                               case 'tendril': {
+                                   const age = calculateAge(cellRef.creationFrame || 0, frameCountRef.current);
+                                   glowColor = getColorFromAge(age);
+                                   break;
+                               }
+                               case 'food':
+                                   glowColor = FOOD_COLOR;
+                                   break;
+                               case 'source':
+                                   glowColor = SOURCE_COLOR;
+                                   break;
+                               default:
+                                   glowColor = 'rgba(255,255,255,1)';
+                           }
+                       }
+
+                       context.save();
                        context.globalAlpha = opacity;
+                       context.shadowBlur = shadowBlur;
+                       context.shadowColor = glowColor;
+                       context.fillStyle = SIGNAL_COLOR;
                        context.fillRect(
-                           signalCoord.x * CELL_SIZE,
-                           signalCoord.y * CELL_SIZE,
-                           CELL_SIZE, CELL_SIZE
+                           coord.x * cellSizeRef.current,
+                           coord.y * cellSizeRef.current,
+                           cellSizeRef.current, cellSizeRef.current
                        );
+                       context.restore();
                    }
                }
            });
 
-           // Reset again
-           context.globalAlpha = 1.0;
-
-           // Draw energy info for sources
-           if (sourcesRef.current && Array.isArray(sourcesRef.current)) {
-               context.font = '12px monospace';
-               sourcesRef.current.forEach((source, index) => {
-                   if (source) {
-                       const energyPercent = Math.floor(((source.energy || 0) / INITIAL_SOURCE_ENERGY) * 100);
-                       const energyText = `S${index}: ${energyPercent}%`;
-
-                       // Color based on energy level
-                       if (source.isActive) {
-                           if (energyPercent > 66) context.fillStyle = '#10B981'; // Green
-                           else if (energyPercent > 33) context.fillStyle = '#F59E0B'; // Yellow
-                           else context.fillStyle = '#EF4444'; // Red
-                       } else {
-                           context.fillStyle = '#6B7280'; // Gray
-                       }
-
-                       context.fillText(energyText, 10, 20 + index * 15);
+           // === Fourth pass: Draw intrinsic glows for tendril cells (on top of everything) ===
+           for (let y = 0; y < gridHeight; y++) {
+               for (let x = 0; x < gridWidth; x++) {
+                   const cell = gridRef.current[y][x];
+                   if (!cell || cell.type !== 'tendril') continue;
+                   const tendrilIds = (cell.tendrilId || '').split(',').filter(Boolean);
+                   if (tendrilIds.length === 0) continue;
+                   const tendril = getTendrilById(tendrilIds[0]);
+                   if (!tendril) continue;
+                   const creationFrame = cell.creationFrame || 0;
+                   const age = calculateAge(creationFrame, frameCountRef.current);
+                   const drawColor = getColorFromAge(age);
+                   // Determine if this cell is the tip of its tendril
+                   const isTip = tendril.path.length > 0 && tendril.path[tendril.path.length - 1].x === x && tendril.path[tendril.path.length - 1].y === y;
+                   // Glow intensity: highest at tip, fades with age
+                   let glowStrength = 0;
+                   if (isTip) {
+                       glowStrength = 32; // Stronger glow at tip
+                   } else {
+                       glowStrength = Math.max(0, 16 * (1 - age / MAX_CELL_AGE));
                    }
-               });
+                   if (glowStrength > 0) {
+                       context.save();
+                       context.globalAlpha = isTip ? 1.0 : 0.9;
+                       context.shadowBlur = glowStrength;
+                       context.shadowColor = drawColor;
+                       // Draw a transparent rect just for the glow
+                       context.fillStyle = 'rgba(0,0,0,0)';
+                       context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
+                       context.restore();
+                   }
+               }
+           }
+
+           // === Additional glow for food cells ===
+           for (let y = 0; y < gridHeight; y++) {
+               for (let x = 0; x < gridWidth; x++) {
+                   const cell = gridRef.current[y][x];
+                   if (!cell || cell.type !== 'food') continue;
+
+                   context.save();
+                   context.globalAlpha = 1.0;
+                   context.shadowBlur = 16;
+                   context.shadowColor = FOOD_COLOR;
+                   context.fillStyle = 'rgba(0,0,0,0)';
+                   context.fillRect(x * cellSizeRef.current, y * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
+                   context.restore();
+               }
            }
        } catch (err) {
            console.error("Error in drawGridAndElements:", err);
@@ -1567,44 +1786,92 @@ const GOLSurvival = () => {
            const intervalMs = 1000 / (currentParams.signalFrequency || 1.0);
            const elapsedSinceLastEmit = currentTimeRef.current - lastSignalEmitTimeRef.current;
 
-           // Main update steps with error handling
-           try {
-               // 1. Emit Signals when it's time
-               if (elapsedSinceLastEmit >= intervalMs) {
-                   emitSignal();
-                   lastSignalEmitTimeRef.current = currentTimeRef.current;
+           // Simulation only runs in the 'normal' phase. Retraction is rendered by
+           // a custom distance-based sweep (stepRetraction); bloom and sporulation
+           // are pure overlay paints. The engine is fully paused during all three.
+           const phase = phaseRef.current;
+           const simulationActive = phase === 'normal';
+
+           if (phase === 'retracting') {
+               try { stepRetraction(); } catch (rErr) { console.error('Error in retraction step:', rErr); }
+           }
+
+           if (simulationActive) {
+               try {
+                   // 1. Emit Signals when it's time
+                   if (elapsedSinceLastEmit >= intervalMs) {
+                       emitSignal();
+                       lastSignalEmitTimeRef.current = currentTimeRef.current;
+                   }
+               } catch (signalErr) {
+                   console.error("Error emitting signals:", signalErr);
                }
-           } catch (signalErr) {
-               console.error("Error emitting signals:", signalErr);
-           }
 
-           try {
-               // 2. Propagate Signals
-               const newlyReachedTips = propagateSignal(deltaTime) || new Set();
+               try {
+                   // 2. Propagate Signals
+                   const newlyReachedTips = propagateSignal(deltaTime) || new Set();
 
-               // 3. Growth at tips
-               triggerGrowthAtTips(newlyReachedTips);
-           } catch (growthErr) {
-               console.error("Error in propagation/growth:", growthErr);
-           }
-
-           try {
-               // 4. Handle fading tendrils
-               updateFadingTendrils();
-
-               // 5. Path integrity checks (less frequent)
-               if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
-                   verifyPathIntegrity();
+                   // 3. Growth at tips
+                   triggerGrowthAtTips(newlyReachedTips);
+               } catch (growthErr) {
+                   console.error("Error in propagation/growth:", growthErr);
                }
-           } catch (updateErr) {
-               console.error("Error in tendril updates:", updateErr);
+
+               try {
+                   // 4. Handle fading tendrils
+                   updateFadingTendrils();
+
+                   // 5. Path integrity checks (less frequent)
+                   if (frameCountRef.current % PATH_INTEGRITY_CHECK_INTERVAL === 0) {
+                       verifyPathIntegrity();
+                   }
+               } catch (updateErr) {
+                   console.error("Error in tendril updates:", updateErr);
+               }
            }
 
-           // Draw the simulation
+           // Draw the simulation grid (or empty grid during bloom/sporulating)
            try {
                drawGridAndElements();
            } catch (drawErr) {
                console.error("Error drawing simulation:", drawErr);
+           }
+
+           // Bloom + spore overlay on top
+           try {
+               drawBloomOverlay();
+           } catch (bloomErr) {
+               console.error("Error drawing bloom overlay:", bloomErr);
+           }
+
+           // Phase transitions
+           try {
+               if (phase === 'normal') {
+                   // Stasis = no successful growth (path push) for STASIS_THRESHOLD_FRAMES.
+                   // This is robust: tendrils oscillating between blocked/growing in dense
+                   // networks don't fool the detector — only real new biomass counts.
+                   if (tendrilsRef.current.size > 0 &&
+                       (frameCountRef.current - lastGrowthFrameRef.current) >= STASIS_THRESHOLD_FRAMES) {
+                       enterRetractionPhase();
+                   }
+               } else if (phase === 'retracting') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= RETRACTION_FRAMES) {
+                       enterBloomPhase();
+                   }
+               } else if (phase === 'blooming') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= BLOOM_DURATION_FRAMES) {
+                       enterSporulationPhase();
+                   }
+               } else if (phase === 'sporulating') {
+                   const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+                   if (phaseElapsed >= SPORE_TRAVEL_FRAMES) {
+                       completeRebirth();
+                   }
+               }
+           } catch (phaseErr) {
+               console.error("Error in phase transition:", phaseErr);
            }
 
            // Continue the animation loop
@@ -1618,8 +1885,14 @@ const GOLSurvival = () => {
                animationFrameIdRef.current = null;
            }
        }
+   // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [error, emitSignal, propagateSignal, triggerGrowthAtTips, spawnFoodPellets,
       updateFadingTendrils, verifyPathIntegrity, drawGridAndElements]);
+   // Note: drawBloomOverlay + enter*Phase + completeRebirth are deliberately omitted.
+   // They're declared later in this component (after `render`), which would put them
+   // in the temporal dead zone when this useCallback's deps array is evaluated.
+   // They're stable closures (their own deps are empty), and `render` reaches them
+   // via closure at call time — so omission is safe AND correct.
 
 
   // --- Initialization and Cleanup ---
@@ -1655,9 +1928,19 @@ const GOLSurvival = () => {
            }
           context.scale(dpr, dpr);
 
-          const gridWidth = Math.floor(clientWidth / CELL_SIZE);
-          const gridHeight = Math.floor(clientHeight / CELL_SIZE);
+          let gridWidth = Math.floor(clientWidth / cellSizeRef.current);
+          let gridHeight = Math.floor(clientHeight / cellSizeRef.current);
+          // Force even dimensions so grid lines are uniform
+          if (gridWidth % 2 !== 0) gridWidth -= 1;
+          if (gridHeight % 2 !== 0) gridHeight -= 1;
+
           gridDimensions.current = { width: gridWidth, height: gridHeight };
+
+          // Size canvas to exact cell multiple to avoid stretched lines
+          canvas.width  = gridWidth  * cellSizeRef.current * dpr;
+          canvas.height = gridHeight * cellSizeRef.current * dpr;
+          canvas.style.width  = `${gridWidth  * cellSizeRef.current}px`;
+          canvas.style.height = `${gridHeight * cellSizeRef.current}px`;
 
           frameCountRef.current = 0;
           lastSignalEmitTimeRef.current = 0;
@@ -1690,8 +1973,8 @@ const GOLSurvival = () => {
       console.log("GOLSurvival component mounted.");
       if (initializeSimulation()) {
           console.log("Starting animation loop.");
-           // Start initial signal emit slightly delayed to allow drawing first frame?
-           setTimeout(() => safeExecute(null, emitSignal), 50);
+           // Emit first signals slightly after init
+           setTimeout(() => emitSignal(), 50);
           animationFrameIdRef.current = window.requestAnimationFrame(render);
       } else {
           console.error("Initialization failed, animation loop not started.");
@@ -1706,7 +1989,7 @@ const GOLSurvival = () => {
           }
           if (initializeSimulation()) {
               console.log("Restarting animation loop after resize.");
-               setTimeout(() => safeExecute(null, emitSignal), 50);
+               setTimeout(() => emitSignal(), 50);
               animationFrameIdRef.current = window.requestAnimationFrame(render);
           } else {
               console.error("Re-initialization after resize failed.");
@@ -1715,6 +1998,20 @@ const GOLSurvival = () => {
 
       window.addEventListener('resize', handleResize);
 
+      // Re-initialize when cellSize changes — the grid + canvas dims must rebuild.
+      // Skipping the very first run avoids double-init on mount.
+      // (Implemented as a separate useEffect outside this closure — see below.)
+
+      // Dev shortcut: press B to manually trigger the bloom from the current state.
+      const handleKey = (e) => {
+          if (e.key === 'b' || e.key === 'B') {
+              if (phaseRef.current === 'normal' || phaseRef.current === 'retracting') {
+                  enterRetractionPhase();
+              }
+          }
+      };
+      window.addEventListener('keydown', handleKey);
+
       // Cleanup
       return () => {
           console.log("GOLSurvival component unmounting.");
@@ -1722,12 +2019,38 @@ const GOLSurvival = () => {
               window.cancelAnimationFrame(animationFrameIdRef.current);
           }
           window.removeEventListener('resize', handleResize);
+          window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
           sourcesRef.current = [];
           foodPelletsRef.current = [];
           connectionsRef.current = [];
       };
-  }, [initializeSimulation, render, safeExecute, emitSignal]); // Add dependencies
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initializeSimulation, render, emitSignal]); // enterRetractionPhase reached via closure (TDZ avoidance)
+
+  // Re-initialize on cellSize change. First mount is handled by the mount effect above.
+  const cellSizeFirstRunRef = useRef(true);
+  useEffect(() => {
+      cellSizeRef.current = cellSize;
+      if (cellSizeFirstRunRef.current) {
+          cellSizeFirstRunRef.current = false;
+          return;
+      }
+      if (animationFrameIdRef.current) {
+          window.cancelAnimationFrame(animationFrameIdRef.current);
+          animationFrameIdRef.current = null;
+      }
+      if (initializeSimulation()) {
+          setTimeout(() => emitSignal(), 50);
+          animationFrameIdRef.current = window.requestAnimationFrame(render);
+      }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cellSize]);
+
+  // Sync showGrid → ref. No re-init needed; the next draw frame picks it up.
+  useEffect(() => {
+      showGridRef.current = showGrid;
+  }, [showGrid]);
 
 
   // --- UI Handler ---
@@ -1778,21 +2101,41 @@ const GOLSurvival = () => {
           return;
       }
 
-      const allTendrilIds = branchCell.tendrilId.split(',');
-      console.log(`Propagating signal at branch point (${branchPoint.x},${branchPoint.y}). IDs: ${allTendrilIds.join(',')}`);
+      const allTendrilIds = branchCell.tendrilId.split(',').filter(Boolean); // Ensure empty strings aren't processed
+      // console.log(`Propagating signal at branch point (${branchPoint.x},${branchPoint.y}). IDs: ${allTendrilIds.join(',')}`); // Original log
+
+      // --- DETAILED LOGGING START ---
+      if (allTendrilIds.length > 1) { // Only log for actual branch points
+          console.log(`%c>>> Branch Point Check (${branchPoint.x},${branchPoint.y}) - Origin: ${originTendril.id}, Cell IDs: [${allTendrilIds.join(', ')}]`, 'color: cyan');
+      }
+      // --- DETAILED LOGGING END ---
+
 
       allTendrilIds.forEach(branchTendrilId => {
           // Skip propagating back to the tendril the signal came from
-          if (branchTendrilId === originTendril.id) return;
-
-          const branchTendril = getTendrilById(branchTendrilId);
-          if (!branchTendril) {
-              console.warn(`Branch tendril ${branchTendrilId} not found during signal propagation.`);
+          if (branchTendrilId === originTendril.id) {
+               // --- DETAILED LOGGING ---
+               // console.log(`%c  -> Skipping ${branchTendrilId}: Is origin tendril.`, 'color: gray');
+               // --- DETAILED LOGGING END ---
               return;
           }
 
-          // Only propagate to active, idle tendrils
-          if (branchTendril.signalState !== 'idle' || (branchTendril.state !== 'growing' && branchTendril.state !== 'connected')) {
+          const branchTendril = getTendrilById(branchTendrilId);
+          if (!branchTendril) {
+              // --- DETAILED LOGGING ---
+              console.warn(`%c  -> Skipping ${branchTendrilId}: Tendril not found.`, 'color: red');
+              // --- DETAILED LOGGING END ---
+              return;
+          }
+
+          // Only propagate to active, idle tendrils that can grow or are connected/blocked roots allowing pass-through
+           const canPropagateState = branchTendril.state === 'growing' || branchTendril.state === 'connected' || (branchTendril.state === 'blocked' && !branchTendril.isBranch); // Allow blocked roots
+          if (branchTendril.signalState !== 'idle' || !canPropagateState) {
+              // --- DETAILED LOGGING ---
+               if (allTendrilIds.length > 1) { // Reduce noise, only log skips for actual branches
+                   console.log(`%c  -> Skipping ${branchTendrilId}: Signal State='${branchTendril.signalState}', Tendril State='${branchTendril.state}' (Needs idle & growing/connected/blocked-root)`, 'color: orange');
+               }
+               // --- DETAILED LOGGING END ---
               return;
           }
 
@@ -1803,45 +2146,606 @@ const GOLSurvival = () => {
           );
 
           if (branchPointIndexInBranch === -1) {
-               console.warn(`Branch point (${branchPoint.x}, ${branchPoint.y}) not found in path of branch ${branchTendril.id}. Cannot propagate signal.`);
+               // --- DETAILED LOGGING ---
+               console.warn(`%c  -> Skipping ${branchTendrilId}: Branch point (${branchPoint.x}, ${branchPoint.y}) not found in its path.`, 'color: red');
+               // --- DETAILED LOGGING END ---
 
-               // Try approximate matching for greater resilience
+               // Try approximate matching for greater resilience (Keep this)
                const approximateMatch = branchTendril.path.findIndex(p =>
                    Math.abs(p.x - branchPoint.x) <= 1 && Math.abs(p.y - branchPoint.y) <= 1
                );
 
                if (approximateMatch !== -1) {
-                   console.log(`Found approximate match for branch point at position ${approximateMatch} in branch ${branchTendril.id}`);
+                   // --- DETAILED LOGGING ---
+                    console.log(`%c  -> PROPAGATING (Approx Match) to ${branchTendrilId} at index ${approximateMatch + 1}`, 'color: green; font-weight: bold');
+                   // --- DETAILED LOGGING END ---
                    branchTendril.signalState = 'propagating';
                    branchTendril.signalPosition = approximateMatch + 1; // Start from next position
                    branchTendril.fractionalPos = approximateMatch + 1;
+                   branchTendril.growthRemaining = growthFactor; // reset growth quota
 
                    // Check bounds for next position
                    if(branchTendril.signalPosition >= branchTendril.path.length) {
                       branchTendril.signalState = 'reached_tip';
                       branchTendril.signalPosition = branchTendril.path.length - 1;
                       branchTendril.fractionalPos = branchTendril.path.length - 1;
+                       // --- DETAILED LOGGING ---
+                       console.log(`%c     -> Branch ${branchTendrilId} immediately reached tip (approx match).`, 'color: green');
+                       // --- DETAILED LOGGING END ---
                    }
+               } else {
+                   // --- DETAILED LOGGING ---
+                    console.warn(`%c  -> Skipping ${branchTendrilId}: Approx match failed too.`, 'color: red');
+                    // --- DETAILED LOGGING END ---
                }
           } else {
-              console.log(`  -> Propagating signal to branch ${branchTendril.id} starting at index ${branchPointIndexInBranch}`);
+              // --- DETAILED LOGGING ---
+               console.log(`%c  -> PROPAGATING (Exact Match) to ${branchTendrilId} starting at index ${branchPointIndexInBranch + 1}`, 'color: green; font-weight: bold');
+               // --- DETAILED LOGGING END ---
               branchTendril.signalState = 'propagating';
               // Start signal propagation from the *next* cell in the branch path
               branchTendril.signalPosition = branchPointIndexInBranch + 1;
               branchTendril.fractionalPos = branchPointIndexInBranch + 1;
+              branchTendril.growthRemaining = growthFactor; // reset growth quota
               // Ensure signal doesn't go out of bounds immediately
               if(branchTendril.signalPosition >= branchTendril.path.length) {
                  branchTendril.signalState = 'reached_tip'; // Mark as reached if branch is only 1 cell long past point
                  branchTendril.signalPosition = branchTendril.path.length - 1;
                  branchTendril.fractionalPos = branchTendril.path.length - 1;
+                  // --- DETAILED LOGGING ---
+                  console.log(`%c     -> Branch ${branchTendrilId} immediately reached tip (exact match).`, 'color: green');
+                   // --- DETAILED LOGGING END ---
               }
           }
       });
-  }, [getTendrilById]); // Depends on getTendrilById
+  }, [getTendrilById, growthFactor]); // Depends on getTendrilById
+
+  // --- Alliance / Source merge ---
+  // Cooperative model: when two colonies meet, they form a persistent alliance.
+  // Both sources stay active and keep their own energy pools; the connection
+  // point becomes a visible bridge. Idempotent — re-collisions don't re-merge.
+  const formAllianceBetweenSources = useCallback((srcIdA, srcIdB, connectionPoint) => {
+      if (!srcIdA || !srcIdB || srcIdA === srcIdB) return;
+      const sourceA = getSourceById(srcIdA);
+      const sourceB = getSourceById(srcIdB);
+      if (!sourceA || !sourceB) return;
+
+      // Lazily initialize allied sets for sources placed before this field existed.
+      if (!sourceA.alliedWith) sourceA.alliedWith = new Set();
+      if (!sourceB.alliedWith) sourceB.alliedWith = new Set();
+
+      const isNewAlliance = !sourceA.alliedWith.has(srcIdB);
+      sourceA.alliedWith.add(srcIdB);
+      sourceB.alliedWith.add(srcIdA);
+
+      if (isNewAlliance) {
+          console.log(`%cAlliance formed: ${sourceA.id} ↔ ${sourceB.id}. Both colonies stay active. Energy: ${sourceA.energy.toFixed(0)} / ${sourceB.energy.toFixed(0)}.`, 'color: cyan; font-weight:bold');
+      }
+
+      // Mark the connection point as a visible bridge.
+      if (connectionPoint && isWithinBounds(connectionPoint.x, connectionPoint.y)) {
+          const cell = gridRef.current[connectionPoint.y][connectionPoint.x];
+          if (cell) {
+              cell.isConnectionPoint = true;
+          }
+      }
+  }, [getSourceById, isWithinBounds]);
+
+  // --- Bloom lifecycle ---
+  // Sunset palette: pale gold → orange → coral → pink → magenta → deep purple.
+  // Returns rgba() string. t in [0, 1].
+  const sunsetColor = (t, alpha = 1) => {
+      const stops = [
+          [255, 240, 200], // pale gold
+          [255, 180, 90],  // orange
+          [255, 120, 110], // coral
+          [255, 95, 165],  // pink
+          [220, 70, 200],  // magenta
+          [130, 40, 180],  // deep purple
+      ];
+      const clamped = Math.max(0, Math.min(1, t));
+      const segs = stops.length - 1;
+      const idx = Math.min(Math.floor(clamped * segs), segs - 1);
+      const local = (clamped * segs) - idx;
+      const a = stops[idx], b = stops[idx + 1];
+      const r = Math.round(a[0] + (b[0] - a[0]) * local);
+      const g = Math.round(a[1] + (b[1] - a[1]) * local);
+      const bl = Math.round(a[2] + (b[2] - a[2]) * local);
+      return `rgba(${r},${g},${bl},${alpha})`;
+  };
+
+  // Stable per-cell pseudo-random in [0, 1) — for stochastic dissolution jitter.
+  // The classic GLSL "fract(sin · large)" noise. No axis-aligned correlation between
+  // neighbors, so adjacent cells get genuinely different jitter values and don't
+  // dissolve in visible blocks.
+  const cellHash01 = (x, y) => {
+      const v = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+      return v - Math.floor(v);
+  };
+
+  // Per-cell dissolution time in [0, 1]. Outer cells get small values (dissolve early),
+  // inner cells get values near 1 (dissolve last). Jitter spreads it stochastically so
+  // the consumption reads as a soft wave, not a hard ring.
+  const RETRACTION_JITTER = 0.12; // ±0.06 spread — distance-driven wave, just enough fuzz to feel organic
+  const cellDissolutionT = (x, y, cx, cy, maxDist) => {
+      const d = Math.hypot(x - cx, y - cy);
+      const normD = maxDist > 0 ? d / maxDist : 0;
+      const jitter = (cellHash01(x, y) - 0.5) * RETRACTION_JITTER;
+      return Math.max(0, Math.min(1, (1 - normD) + jitter));
+  };
+
+  const enterRetractionPhase = useCallback(() => {
+      console.log('%c🌀 STASIS — colony imploding toward bloom center', 'color: hotpink; font-weight: bold');
+      phaseRef.current = 'retracting';
+      phaseStartFrameRef.current = frameCountRef.current;
+      stasisCounterRef.current = 0;
+
+      // Bloom center logic:
+      //   • If colonies touched and merged (any source has formed an alliance), the
+      //     bloom is the centroid of the unified network — sits in the middle, where
+      //     the merge actually happened.
+      //   • If colonies stayed disjoint (no alliance ever formed), the bloom anchors
+      //     at the position of the dominant source — keeps the flower rooted in real
+      //     biomass instead of landing in the empty space between two pile-ups.
+      const dims = gridDimensions.current;
+      const hasAlliance = sourcesRef.current.some(
+          (s) => s.alliedWith && s.alliedWith.size > 0
+      );
+
+      const computeCentroid = () => {
+          let sumX = 0, sumY = 0, count = 0;
+          for (let y = 0; y < dims.height; y++) {
+              if (!gridRef.current[y]) continue;
+              for (let x = 0; x < dims.width; x++) {
+                  const c = gridRef.current[y][x];
+                  if (c && (c.type === 'tendril' || c.type === 'source')) {
+                      sumX += x; sumY += y; count++;
+                  }
+              }
+          }
+          return count > 0
+              ? { x: Math.floor(sumX / count), y: Math.floor(sumY / count) }
+              : { x: Math.floor(dims.width / 2), y: Math.floor(dims.height / 2) };
+      };
+
+      if (hasAlliance) {
+          bloomCenterRef.current = computeCentroid();
+      } else {
+          let bestSource = null;
+          let bestMass = -1;
+          sourcesRef.current.forEach((s) => {
+              let mass = 0;
+              tendrilsRef.current.forEach((t) => {
+                  if (t.sourceId === s.id) mass += (t.path && t.path.length) || 0;
+              });
+              if (mass > bestMass) { bestMass = mass; bestSource = s; }
+          });
+          bloomCenterRef.current = (bestSource && bestMass > 0)
+              ? { x: bestSource.x, y: bestSource.y }
+              : computeCentroid();
+      }
+
+      let maxDist = 0;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (c && (c.type === 'tendril' || c.type === 'source')) {
+                  const d = Math.hypot(x - cx, y - cy);
+                  if (d > maxDist) maxDist = d;
+              }
+          }
+      }
+      retractionMaxDistRef.current = Math.max(maxDist, 1);
+
+      // Halt the engine.
+      sourcesRef.current.forEach(s => { s.isActive = false; s.state = 'inactive'; });
+      tendrilsRef.current.forEach(t => { t.signalState = 'idle'; });
+  }, []);
+
+  // Per-frame retraction: each cell has a deterministic "dissolution time" based on
+  // its distance from the bloom center plus per-cell jitter. Once t exceeds that
+  // dissolution time, the cell is removed. Outer biomass dissolves first; inner last.
+  // The result reads as an implosion — everything sucked toward the bloom point.
+  const stepRetraction = () => {
+      const phaseElapsed = frameCountRef.current - phaseStartFrameRef.current;
+      const t = Math.min(phaseElapsed / RETRACTION_FRAMES, 1);
+      const dims = gridDimensions.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      const maxDist = retractionMaxDistRef.current;
+
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (!c || (c.type !== 'tendril' && c.type !== 'source')) continue;
+              const dissT = cellDissolutionT(x, y, cx, cy, maxDist);
+              if (t >= dissT) {
+                  c.type = 'empty';
+                  c.color = BACKGROUND_COLOR;
+                  c.tendrilId = null;
+                  c.sourceId = null;
+                  c.opacity = 0;
+                  c.isBranchPoint = false;
+                  c.isConnectionPoint = false;
+                  c.creationFrame = 0;
+              }
+          }
+      }
+  };
+
+  const enterBloomPhase = useCallback(() => {
+      console.log('%c🌸 BLOOM', 'color: hotpink; font-weight: bold; font-size: 14px');
+      phaseRef.current = 'blooming';
+      phaseStartFrameRef.current = frameCountRef.current;
+
+      // Wipe tendril + source cells, but PRESERVE food. Food pellets are part of
+      // the world's resource layer, not the colony's biomass — they persist through
+      // the bloom and the new colonies inherit them.
+      const dims = gridDimensions.current;
+      for (let y = 0; y < dims.height; y++) {
+          if (!gridRef.current[y]) continue;
+          for (let x = 0; x < dims.width; x++) {
+              const c = gridRef.current[y][x];
+              if (!c) continue;
+              if (c.type === 'food') continue; // preserve food
+              c.type = 'empty';
+              c.color = BACKGROUND_COLOR;
+              c.tendrilId = null;
+              c.sourceId = null;
+              c.foodPelletId = null;
+              c.opacity = 1;
+              c.isBranchPoint = false;
+              c.isConnectionPoint = false;
+              c.creationFrame = 0;
+          }
+      }
+      tendrilsRef.current.clear();
+      sourcesRef.current = [];
+      // foodPelletsRef left intact — pellets carry over to the next colonies.
+  }, []);
+
+  const enterSporulationPhase = useCallback(() => {
+      console.log('%c✨ Sporulation — two seeds shooting out', 'color: gold; font-weight: bold');
+      phaseRef.current = 'sporulating';
+      phaseStartFrameRef.current = frameCountRef.current;
+
+      const dims = gridDimensions.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.min(dims.width, dims.height) * SPORE_DISTANCE_FRACTION;
+      const margin = 5;
+      const clampX = (v) => Math.max(margin, Math.min(dims.width - margin - 1, v));
+      const clampY = (v) => Math.max(margin, Math.min(dims.height - margin - 1, v));
+      sporesRef.current = [
+          { startX: cx, startY: cy, finalX: clampX(Math.round(cx + Math.cos(angle) * dist)), finalY: clampY(Math.round(cy + Math.sin(angle) * dist)) },
+          { startX: cx, startY: cy, finalX: clampX(Math.round(cx - Math.cos(angle) * dist)), finalY: clampY(Math.round(cy - Math.sin(angle) * dist)) },
+      ];
+  }, []);
+
+  const completeRebirth = useCallback(() => {
+      console.log('%c🌱 New colonies seeded — simulation reborn', 'color: lime; font-weight: bold');
+      sourcesRef.current = [];
+      sporesRef.current.forEach((s, i) => {
+          const sourceId = `s-${frameCountRef.current}-${i}`;
+          const newSource = {
+              id: sourceId,
+              x: s.finalX,
+              y: s.finalY,
+              energy: INITIAL_SOURCE_ENERGY,
+              isActive: true,
+              lastActivityFrame: frameCountRef.current,
+              state: 'active',
+              alliedWith: new Set(),
+          };
+          sourcesRef.current.push(newSource);
+          if (isWithinBounds(s.finalX, s.finalY)) {
+              const cell = gridRef.current[s.finalY][s.finalX];
+              cell.type = 'source';
+              cell.color = SOURCE_COLOR;
+              cell.sourceId = sourceId;
+              cell.creationFrame = frameCountRef.current;
+              cell.opacity = 1;
+          }
+          // Plant the initial root tendril at the source.
+          const tendrilId = `t-${sourceId}-r`;
+          tendrilsRef.current.set(tendrilId, {
+              id: tendrilId,
+              sourceId,
+              path: [{ x: s.finalX, y: s.finalY }],
+              state: 'growing',
+              signalState: 'idle',
+              signalPosition: -1,
+              fractionalPos: 0,
+              opacity: 1,
+              isBranch: false,
+              parentId: null,
+              blockedFrame: null,
+              creationFrame: frameCountRef.current,
+              growthRemaining: 0,
+          });
+          if (isWithinBounds(s.finalX, s.finalY)) {
+              gridRef.current[s.finalY][s.finalX].tendrilId = tendrilId;
+          }
+      });
+      sporesRef.current = [];
+      phaseRef.current = 'normal';
+      stasisCounterRef.current = 0;
+      lastGrowthFrameRef.current = frameCountRef.current;
+      lastSignalEmitTimeRef.current = currentTimeRef.current;
+  }, [isWithinBounds]);
+
+  // All overlays draw as filled cellSizeRef.current rectangles to match the simulation's pixel-grid aesthetic.
+  // No arcs, no shadowBlur — same chunky 8-bit feel as the tendrils.
+  const drawBloomOverlay = useCallback(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const phase = phaseRef.current;
+      if (phase === 'normal') return;
+
+      const dims = gridDimensions.current;
+      const elapsed = frameCountRef.current - phaseStartFrameRef.current;
+      const cx = bloomCenterRef.current.x;
+      const cy = bloomCenterRef.current.y;
+
+      // Helper: paint a grid cell with a sunset color.
+      const paintCell = (gx, gy, color) => {
+          if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) return;
+          ctx.fillStyle = color;
+          ctx.fillRect(gx * cellSizeRef.current, gy * cellSizeRef.current, cellSizeRef.current, cellSizeRef.current);
+      };
+
+      ctx.save();
+
+      if (phase === 'retracting') {
+          const t = Math.min(elapsed / RETRACTION_FRAMES, 1);
+          const maxDist = retractionMaxDistRef.current;
+
+          // Tint cells about to dissolve — sunset wave precedes the consumption.
+          // Soft, jittered, distance-biased: cells light up just before disappearing,
+          // so the visual reads as everything being pulled toward the bloom center.
+          const PRE_DOOM_WINDOW = 0.10; // last 10% of life before dissolution
+          for (let gy = 0; gy < dims.height; gy++) {
+              if (!gridRef.current[gy]) continue;
+              for (let gx = 0; gx < dims.width; gx++) {
+                  const c = gridRef.current[gy][gx];
+                  if (!c || (c.type !== 'tendril' && c.type !== 'source')) continue;
+                  const dissT = cellDissolutionT(gx, gy, cx, cy, maxDist);
+                  const remaining = dissT - t;
+                  if (remaining > 0 && remaining < PRE_DOOM_WINDOW) {
+                      const intensity = 1 - remaining / PRE_DOOM_WINDOW;
+                      // Hotter palette as the dissolution moment approaches.
+                      paintCell(gx, gy, sunsetColor(0.10 + intensity * 0.45, intensity * 0.9));
+                  }
+              }
+          }
+
+          // Anticipation glow building at the bloom center — the bloom is gathering.
+          const glowRadius = 0.5 + t * 3.0;
+          const r = Math.ceil(glowRadius) + 1;
+          const minY = Math.max(0, Math.floor(cy - r));
+          const maxY = Math.min(dims.height - 1, Math.ceil(cy + r));
+          const minX = Math.max(0, Math.floor(cx - r));
+          const maxX = Math.min(dims.width - 1, Math.ceil(cx + r));
+          for (let gy = minY; gy <= maxY; gy++) {
+              for (let gx = minX; gx <= maxX; gx++) {
+                  const d = Math.hypot(gx - cx, gy - cy);
+                  if (d < glowRadius) {
+                      const localT = 1 - d / glowRadius;
+                      paintCell(gx, gy, sunsetColor(0.55 - localT * 0.35, t * (0.4 + localT * 0.6)));
+                  }
+              }
+          }
+      } else if (phase === 'blooming' || phase === 'sporulating') {
+          // Spiral flower: an Archimedean spiral traced as discrete grid cells with
+          // a sunset gradient running from the gold core outward to magenta petal tips.
+          // Inflorescences (small perpendicular petal-bundles) appear at quarter-turns.
+          // During sporulation the flower fades — the bloom is consumed to launch the spores.
+          const maxRadius = Math.min(dims.width, dims.height) * BLOOM_RADIUS_FRACTION;
+          const totalTheta = BLOOM_SPIRAL_TURNS * 2 * Math.PI;
+
+          let drawProgress = 1; // how far along the spiral has been traced
+          let pulsation = 1;     // overall brightness multiplier
+          let includeHead = false;
+          let flowerAlpha = 1;   // fades to 0 during sporulation
+
+          if (phase === 'blooming') {
+              const t = Math.min(elapsed / BLOOM_DURATION_FRAMES, 1);
+              if (t < 0.70) {
+                  // Spiral grows outward slowly. Per-arm staggering + per-cell jitter
+                  // applied below — drawProgress is the global progress envelope.
+                  drawProgress = t / 0.70;
+                  includeHead = true;
+              } else if (t < 0.90) {
+                  drawProgress = 1;
+                  pulsation = 0.92 + 0.08 * Math.sin((t - 0.70) * Math.PI * 5);
+              } else {
+                  drawProgress = 1;
+                  flowerAlpha = 1 - (t - 0.90) / 0.10 * 0.25;
+              }
+          } else {
+              // Sporulating: the flower is being consumed. Fade quickly from outside in.
+              const t = Math.min(elapsed / SPORE_TRAVEL_FRAMES, 1);
+              drawProgress = Math.max(0, 1 - t * 1.1); // outer petals retract first
+              flowerAlpha = Math.max(0, 1 - t * 1.3);
+          }
+
+          // Multi-arm rosette: BLOOM_SPIRAL_ARMS spirals share a center and unfurl
+          // simultaneously, equally spaced around the circle. Each arm gets organic
+          // noise displacement (sub-cell) so the wrapping doesn't read as mechanical.
+          const armAngleStep = (2 * Math.PI) / BLOOM_SPIRAL_ARMS;
+          const samplesPerArm = 360;
+          const drawnSamples = Math.max(0, Math.floor(samplesPerArm * drawProgress));
+          const inflorescenceCount = Math.floor(totalTheta / BLOOM_INFLORESCENCE_STEP);
+
+          // Continuous noise (fract-sin) — same family as cellHash01 but on floats.
+          // Returns [0, 1). Used to perturb spiral path, appearance timing, and petals.
+          const noise01 = (a, b) => {
+              const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+              return v - Math.floor(v);
+          };
+          const SPIRAL_WOBBLE = 0.85; // cells of perpendicular wobble on the path
+          const SPIRAL_WOBBLE_FREQ = 1.3; // ripples per radian — slow undulations
+          const ARM_DELAYS = [0, 0.06, 0.11]; // each arm starts at a slightly different time
+          const APPEAR_JITTER = 0.05; // ±2.5% spread on per-cell appearance time
+          const FADE_IN_WINDOW = 0.04; // cells fade in over this drawProgress window once they appear
+
+          for (let arm = 0; arm < BLOOM_SPIRAL_ARMS; arm++) {
+              const armOffset = arm * armAngleStep;
+              const armSalt = arm * 17.31; // each arm has its own noise pattern
+              const armDelay = ARM_DELAYS[arm % ARM_DELAYS.length];
+              // Per-arm progress — accounts for staggered start.
+              const armProgress = Math.max(0, (drawProgress - armDelay) / Math.max(1 - armDelay, 0.001));
+
+              // Trace this arm's spiral with organic wobble + per-cell appearance jitter.
+              for (let i = 0; i <= samplesPerArm; i++) {
+                  const sampleT = i / samplesPerArm;
+                  // Each cell along the arm has its own appearance time, jittered.
+                  const cellOffset = (noise01(sampleT * 234.7, armSalt + 4.2) - 0.5) * APPEAR_JITTER;
+                  const cellEffectiveT = sampleT + cellOffset;
+                  if (cellEffectiveT > armProgress) continue;
+
+                  const theta = sampleT * totalTheta + armOffset;
+                  const r = sampleT * maxRadius;
+                  // Wobble along the local perpendicular to the spiral tangent.
+                  const wobble = (noise01(theta * SPIRAL_WOBBLE_FREQ, armSalt) - 0.5) * SPIRAL_WOBBLE * 2;
+                  const perpX = -Math.sin(theta);
+                  const perpY = Math.cos(theta);
+                  const sx = cx + r * Math.cos(theta) + perpX * wobble;
+                  const sy = cy + r * Math.sin(theta) + perpY * wobble;
+                  const gx = Math.round(sx);
+                  const gy = Math.round(sy);
+                  if (gx < 0 || gy < 0 || gx >= dims.width || gy >= dims.height) continue;
+
+                  // Fade-in: cells brighten gradually after they "appear" rather than
+                  // popping in at full alpha. Reads as accretion, not stamping.
+                  const sinceAppear = armProgress - cellEffectiveT;
+                  const fadeIn = Math.min(sinceAppear / FADE_IN_WINDOW, 1);
+                  // Subtle head warmth — gentle slope, no missile-tip spike.
+                  const distFromHead = armProgress - sampleT;
+                  const headWarmth = includeHead && distFromHead > 0
+                      ? 0.10 * Math.exp(-distFromHead * 6)
+                      : 0;
+                  const baseAlpha = (0.80 + headWarmth) * fadeIn * pulsation * flowerAlpha;
+                  paintCell(gx, gy, sunsetColor(sampleT, baseAlpha));
+              }
+
+              // Inflorescences with mild positional + length variation.
+              for (let k = 1; k <= inflorescenceCount; k++) {
+                  // Slightly jitter the spacing so petals don't land at perfectly identical θ values.
+                  const inflJitter = (noise01(k * 3.71, armSalt + 1.0) - 0.5) * 0.18;
+                  const inflT = ((k * BLOOM_INFLORESCENCE_STEP) / totalTheta) + inflJitter / totalTheta;
+                  if (inflT <= 0 || inflT > armProgress) continue;
+
+                  // Petals fade in along with the arm's growth.
+                  const sinceInflAppear = armProgress - inflT;
+                  const inflFadeIn = Math.min(sinceInflAppear / FADE_IN_WINDOW, 1);
+
+                  const theta = inflT * totalTheta + armOffset;
+                  const r = inflT * maxRadius;
+                  const px = cx + r * Math.cos(theta);
+                  const py = cy + r * Math.sin(theta);
+
+                  const eps = 0.003;
+                  const theta2 = (inflT + eps) * totalTheta + armOffset;
+                  const r2 = (inflT + eps) * maxRadius;
+                  const tx = (cx + r2 * Math.cos(theta2)) - px;
+                  const ty = (cy + r2 * Math.sin(theta2)) - py;
+                  const len = Math.hypot(tx, ty) || 1;
+                  const perpX = -ty / len;
+                  const perpY = tx / len;
+
+                  // Each side independently varies length within ±1 cell of the base.
+                  const lenA = BLOOM_INFLORESCENCE_LEN + Math.round((noise01(k * 7.13, armSalt + 2.0) - 0.5) * 1.6);
+                  const lenB = BLOOM_INFLORESCENCE_LEN + Math.round((noise01(k * 5.27, armSalt + 3.0) - 0.5) * 1.6);
+                  const maxLen = Math.max(lenA, lenB);
+                  for (let p = 1; p <= maxLen; p++) {
+                      const a = (1 - (p - 1) / Math.max(maxLen, 1)) * 0.85 * inflFadeIn * pulsation * flowerAlpha;
+                      const c = sunsetColor(Math.min(inflT + 0.1, 1), a);
+                      if (p <= lenA) {
+                          const ax = Math.round(px + perpX * p);
+                          const ay = Math.round(py + perpY * p);
+                          if (ax >= 0 && ay >= 0 && ax < dims.width && ay < dims.height) paintCell(ax, ay, c);
+                      }
+                      if (p <= lenB) {
+                          const bx = Math.round(px - perpX * p);
+                          const by = Math.round(py - perpY * p);
+                          if (bx >= 0 && by >= 0 && bx < dims.width && by < dims.height) paintCell(bx, by, c);
+                      }
+                  }
+              }
+              // No discrete pulse head — the per-cell fade-in already conveys the
+              // leading edge as a soft warm gradient, not a missile tip.
+          }
+
+          // Glowing core seed — always present during bloom, fades during sporulation.
+          if (flowerAlpha > 0) {
+              const corePulse = 0.5 + 0.5 * Math.sin(elapsed * 0.15);
+              paintCell(cx, cy, `rgba(255,250,235,${flowerAlpha})`);
+              [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+                  paintCell(cx + dx, cy + dy, sunsetColor(0.06, (0.7 + 0.25 * corePulse) * flowerAlpha));
+              });
+          }
+      }
+
+      // Spores fly out during sporulation regardless of flower fade.
+      if (phase === 'sporulating') {
+          const t = Math.min(elapsed / SPORE_TRAVEL_FRAMES, 1);
+          const easeT = 1 - Math.pow(1 - t, 3); // ease-out cubic
+
+          // Bloom afterglow at center, fading.
+          const ag = Math.max(0, 1 - elapsed / SPORE_TRAVEL_FRAMES);
+          if (ag > 0) {
+              const glowRadius = 2.5 * ag + 0.5;
+              const glowColor = sunsetColor(0.45, ag * 0.85);
+              const r = Math.ceil(glowRadius) + 1;
+              const minY = Math.max(0, Math.floor(cy - r));
+              const maxY = Math.min(dims.height - 1, Math.ceil(cy + r));
+              const minX = Math.max(0, Math.floor(cx - r));
+              const maxX = Math.min(dims.width - 1, Math.ceil(cx + r));
+              for (let gy = minY; gy <= maxY; gy++) {
+                  for (let gx = minX; gx <= maxX; gx++) {
+                      const d = Math.hypot(gx - cx, gy - cy);
+                      if (d < glowRadius) paintCell(gx, gy, glowColor);
+                  }
+              }
+          }
+
+          // Spores — chunky pixel cells with a fading trail.
+          sporesRef.current.forEach(s => {
+              const trailLen = 12;
+              for (let i = trailLen - 1; i >= 1; i--) {
+                  const tt = Math.max(0, easeT - i * 0.06);
+                  if (tt <= 0) continue;
+                  const tx = Math.round(s.startX + (s.finalX - s.startX) * tt);
+                  const ty = Math.round(s.startY + (s.finalY - s.startY) * tt);
+                  const a = (1 - i / trailLen) * (1 - t * 0.4) * 0.85;
+                  paintCell(tx, ty, sunsetColor(0.18 + i * 0.045, a));
+              }
+              // Bright head: a 3-cell cluster (head + tiny halo).
+              const hx = Math.round(s.startX + (s.finalX - s.startX) * easeT);
+              const hy = Math.round(s.startY + (s.finalY - s.startY) * easeT);
+              paintCell(hx, hy, sunsetColor(0.05, 1));
+              paintCell(hx + 1, hy, sunsetColor(0.15, 0.6));
+              paintCell(hx - 1, hy, sunsetColor(0.15, 0.6));
+              paintCell(hx, hy + 1, sunsetColor(0.15, 0.6));
+              paintCell(hx, hy - 1, sunsetColor(0.15, 0.6));
+          });
+      }
+
+      ctx.restore();
+  }, []);
 
   // --- JSX Return ---
   return (
-    <div className="relative w-full h-screen bg-black flex flex-col items-center justify-center p-5">
+    <div className="relative w-full h-screen flex flex-col items-center justify-center p-5" style={{ backgroundColor: '#060C14' }}>
       {error && (
         <div className="absolute top-4 left-4 right-4 bg-red-800 text-white p-3 rounded shadow-lg z-50 max-w-md mx-auto">
           <p className="font-bold mb-1">Simulation Error</p>
@@ -1852,7 +2756,7 @@ const GOLSurvival = () => {
               setError(null); // Clear error
               // Attempt re-initialization - might need full reload depending on error
               if (initializeSimulation()) {
-                 setTimeout(() => safeExecute(null, emitSignal), 50);
+                 setTimeout(() => emitSignal(), 50);
                  animationFrameIdRef.current = window.requestAnimationFrame(render);
               }
             }}
@@ -1870,51 +2774,91 @@ const GOLSurvival = () => {
         Your browser does not support the canvas element.
       </canvas>
 
-       {/* Controls Container */}
-       <div className={`absolute bottom-4 left-4 flex space-x-6 ${error ? 'hidden' : ''}`}>
-           {/* Parameter Sliders */}
-           <div className="bg-gray-800 bg-opacity-80 p-4 rounded text-white text-xs space-y-2 w-48 shadow-lg">
-                <div className="flex items-center justify-between">
-                   <label htmlFor="signalFrequency" className="flex-1 mr-1">Signal Freq:</label>
-                   <input type="range" id="signalFrequency" min="0.1" max="5.0" step="0.1" value={signalFrequency} onChange={(e) => setSignalFrequency(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{signalFrequency.toFixed(1)} Hz</span>
-                 </div>
-                 <div className="flex items-center justify-between">
-                   <label htmlFor="pulseSpeed" className="flex-1 mr-1">Pulse Speed:</label>
-                   <input type="range" id="pulseSpeed" min="0.5" max="10.0" step="0.5" value={pulseSpeed} onChange={(e) => setPulseSpeed(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{pulseSpeed.toFixed(1)}</span>
-                 </div>
-                 <div className="flex items-center justify-between">
-                   <label htmlFor="branch" className="flex-1 mr-1">Branch %:</label>
-                   <input type="range" id="branch" min="0" max="0.5" step="0.01" value={branchChance} onChange={(e) => setBranchChance(Number(e.target.value))} className="w-20 mx-1 flex-shrink-0 h-4 appearance-none bg-gray-600 rounded slider-thumb" />
-                   <span className="w-8 text-right ml-1">{(branchChance * 100).toFixed(0)}%</span>
-                 </div>
-                {/* Removed Fade Speed slider - now have standard/reabsorbing */}
+       {/* Controls — single frosted panel, slime-mold neon palette */}
+       <div className={`absolute bottom-5 left-5 ${error ? 'hidden' : ''}`}>
+         <div className="rounded-xl border border-white/[0.08] bg-[#0a0f18]/85 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.5)] px-5 py-4 flex gap-5 font-mono text-[#cfd6e0] select-none">
+           {/* Sliders column */}
+           <div className="flex flex-col gap-2.5 min-w-[218px]">
+             {[
+               { id: 'sf', label: 'signal',  v: signalFrequency, set: setSignalFrequency, min: 1, max: 30,  step: 0.5,  fmt: (x) => `${x.toFixed(1)} Hz` },
+               { id: 'ps', label: 'pulse',   v: pulseSpeed,      set: setPulseSpeed,      min: 5, max: 60,  step: 1,    fmt: (x) => x.toFixed(0) },
+               { id: 'br', label: 'branch',  v: branchChance,    set: setBranchChance,    min: 0, max: 0.5, step: 0.01, fmt: (x) => `${(x * 100).toFixed(0)}%` },
+               { id: 'gr', label: 'growth',  v: growthFactor,    set: setGrowthFactor,    min: 1, max: 10,  step: 1,    fmt: (x) => `${x}` },
+               { id: 'cs', label: 'cell',    v: cellSize,        set: setCellSize,        min: 1, max: 24,  step: 1,    fmt: (x) => `${x}px` },
+             ].map((s) => (
+               <div key={s.id} className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px]">
+                 <label htmlFor={s.id} className="uppercase tracking-[0.18em] text-[#7c8898]">{s.label}</label>
+                 <input
+                   type="range" id={s.id}
+                   min={s.min} max={s.max} step={s.step}
+                   value={s.v}
+                   onChange={(e) => s.set(Number(e.target.value))}
+                   className="slime-slider w-full h-1 appearance-none rounded-full bg-white/10 cursor-pointer"
+                   style={{ accentColor: '#ff9c32' }}
+                 />
+                 <span className="text-right text-[10px] text-white/80 tabular-nums">{s.fmt(s.v)}</span>
+               </div>
+             ))}
+             {/* Grid toggle — pill switch, dot stays inside the track at both ends */}
+             <label className="grid grid-cols-[58px_1fr_46px] items-center gap-2.5 text-[10px] cursor-pointer select-none">
+               <span className="uppercase tracking-[0.18em] text-[#7c8898]">grid</span>
+               <button
+                 type="button"
+                 onClick={() => setShowGrid(v => !v)}
+                 className={`relative w-10 h-5 rounded-full transition-colors ${showGrid ? 'bg-orange-400/70' : 'bg-white/10'}`}
+                 aria-pressed={showGrid}
+               >
+                 <span
+                   className="absolute top-[3px] w-3.5 h-3.5 rounded-full bg-white transition-[left] duration-150"
+                   style={{ left: showGrid ? '23px' : '3px' }}
+                 ></span>
+               </button>
+               <span className="text-right text-[10px] text-white/80 tabular-nums">{showGrid ? 'on' : 'off'}</span>
+             </label>
            </div>
 
-           {/* Directional Weights Grid */}
-            <div className="bg-gray-800 bg-opacity-80 p-3 rounded text-white text-xs shadow-lg">
-                <label className="block text-center mb-2 font-semibold">Growth Bias</label>
-                <div className="grid grid-cols-3 gap-1 w-32">
-                   {[0, 1, 2, 3, -1, 5, 6, 7, 8].map((uiIndex) => {
-                     const relDir = UI_INDEX_TO_RELATIVE[uiIndex];
-                     const isDisabled = uiIndex === 4;
-                     return isDisabled ? (
-                       <div key="center" className="w-full h-8 flex items-center justify-center rounded bg-gray-600 text-gray-400 text-xs border border-gray-500"> • </div>
-                     ) : (
-                       <input
-                         key={uiIndex}
-                         type="number" min="0" step="0.1"
-                         value={directionWeights[uiIndex] !== undefined ? directionWeights[uiIndex] : ''}
-                         onChange={(e) => handleWeightChange(uiIndex, e.target.value)}
-                         title={relDir || 'Center'}
-                         className={`w-full h-8 p-1 text-center rounded bg-gray-700 text-white text-sm border border-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 hover:bg-gray-600`}
-                       />
-                     );
-                   })}
-                </div>
-            </div>
-           {/* TODO: Add display for total energy, active tendrils, etc. */}
+           {/* Growth bias — visual directional grid */}
+           <div className="flex flex-col items-center gap-2 pl-5 border-l border-white/[0.08]">
+             <span className="text-[10px] uppercase tracking-[0.20em] text-[#7c8898]">growth bias</span>
+             <div className="grid grid-cols-3 gap-[3px]">
+               {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((uiIndex) => {
+                 if (uiIndex === 4) {
+                   return (
+                     <div key="center" className="w-10 h-10 rounded-md bg-white/[0.025] border border-white/[0.05] flex items-center justify-center">
+                       <span className="w-1 h-1 rounded-full bg-white/40"></span>
+                     </div>
+                   );
+                 }
+                 const arrows = ['↖', '↑', '↗', '←', null, '→', '↙', '↓', '↘'];
+                 const arrow = arrows[uiIndex];
+                 const v = directionWeights[uiIndex] || 0;
+                 // Magnitude in [0, 1]: max usable bias ~3.0 — beyond that visual saturates.
+                 const mag = Math.min(v / 3, 1);
+                 // Color shifts from neutral (low) → warm orange (mid) → magenta-pink (high).
+                 const arrowColor = mag === 0
+                   ? 'rgba(170,180,195,0.55)'
+                   : `hsl(${28 - mag * 40}, ${70 + mag * 25}%, ${58 + mag * 4}%)`;
+                 const arrowOpacity = mag === 0 ? 0.55 : 0.6 + mag * 0.4;
+                 return (
+                   <div key={uiIndex} className="relative w-10 h-10 group">
+                     {/* Arrow on top, fills most of the tile */}
+                     <div className="pointer-events-none absolute inset-x-0 top-0 h-7 flex items-center justify-center">
+                       <span className="text-[18px] leading-none" style={{ color: arrowColor, opacity: arrowOpacity }}>{arrow}</span>
+                     </div>
+                     {/* Click-to-edit number input — covers tile, value rendered at bottom */}
+                     <input
+                       type="number" min={0} max={5} step={0.1}
+                       value={v}
+                       onChange={(e) => handleWeightChange(uiIndex, e.target.value)}
+                       title={UI_INDEX_TO_RELATIVE[uiIndex]}
+                       className="absolute inset-0 w-full h-full rounded-md bg-white/[0.03] border border-white/[0.07] hover:border-white/[0.18] focus:border-orange-400/60 focus:bg-white/[0.06] outline-none text-[9px] text-center text-white/75 tabular-nums pt-5 pb-0.5 transition-colors cursor-pointer appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                     />
+                   </div>
+                 );
+               })}
+             </div>
+           </div>
+         </div>
        </div>
     </div>
   );
