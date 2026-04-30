@@ -2021,12 +2021,11 @@ const GOLSurvival = () => {
               handleResize();
           }, 220);
       };
-      // Expose to the render loop so it can poll for size changes that the
-      // event listeners might miss inside embedded preview panes. Compares
-      // parent.clientWidth directly against the dimensions the simulation was
-      // last initialized with (gridDims × cellSize) — no closure-state baseline
-      // that could drift out of sync if init reads a transient parent size.
-      resizePollRef.current = () => {
+      // setInterval-based resize check — runs independently of the animation
+      // loop. If the render loop dies (HMR, error recovery, anything) the
+      // interval keeps polling, so resize detection cannot fail along with
+      // rendering. Compares parent.clientWidth to the actual init dims.
+      const resizePollFn = () => {
           const p = canvasRef.current?.parentElement;
           if (!p || !gridDimensions.current) return;
           const w = p.clientWidth;
@@ -2034,14 +2033,16 @@ const GOLSurvival = () => {
           const cs = cellSizeRef.current || 1;
           const expectedW = gridDimensions.current.width * cs;
           const expectedH = gridDimensions.current.height * cs;
-          // Hysteresis of 2 cells in either direction to avoid jitter.
           if (Math.abs(w - expectedW) >= cs * 2 || Math.abs(h - expectedH) >= cs * 2) {
-              console.log(`%c[resize-poll] mismatch: parent=${w}x${h}, expected=${expectedW}x${expectedH} (grid=${gridDimensions.current.width}x${gridDimensions.current.height} cs=${cs}) — scheduling re-init`, 'color: yellow; font-weight: bold');
+              console.log(`%c[resize-poll] mismatch: parent=${w}x${h}, expected=${expectedW}x${expectedH} — scheduling re-init`, 'color: yellow; font-weight: bold');
               lastInitW = w;
               lastInitH = h;
               scheduleResize();
           }
       };
+      const resizeInterval = setInterval(resizePollFn, 400);
+      // Also expose for the render loop (belt + suspenders).
+      resizePollRef.current = resizePollFn;
 
       const parent = canvasRef.current?.parentElement;
       let resizeObserver = null;
@@ -2088,6 +2089,7 @@ const GOLSurvival = () => {
               window.cancelAnimationFrame(animationFrameIdRef.current);
           }
           if (resizeTimeout) clearTimeout(resizeTimeout);
+          if (resizeInterval) clearInterval(resizeInterval);
           if (resizeObserver) resizeObserver.disconnect();
           window.removeEventListener('resize', scheduleResize);
           resizePollRef.current = null;
