@@ -154,6 +154,11 @@ const GOLSurvival = () => {
   const cellSizeRef = useRef(BASE_CELL_SIZE);
   const showGridRef = useRef(true);
 
+  // Polling fallback for resize detection — set inside the mount useEffect,
+  // called every ~half-second from the render loop. Catches resizes when
+  // window.resize and ResizeObserver both fail to fire (some preview panes).
+  const resizePollRef = useRef(null);
+
   // --- Bloom lifecycle refs ---
   const phaseRef = useRef('normal'); // 'normal' | 'retracting' | 'blooming' | 'sporulating'
   const phaseStartFrameRef = useRef(0);
@@ -1744,6 +1749,14 @@ const GOLSurvival = () => {
            // Update frame counter
            frameCountRef.current++;
 
+           // Resize poll — every ~30 frames, ask the mount-effect helper to check
+           // whether the parent's clientWidth/Height has drifted from the last init
+           // dims. Bullet-proof fallback for environments where window.resize and
+           // ResizeObserver both miss.
+           if (frameCountRef.current % 30 === 0 && resizePollRef.current) {
+               resizePollRef.current();
+           }
+
            // Performance logging
            if(frameCountRef.current % 300 === 0) {
                console.log(`%cFrame: ${frameCountRef.current} - DeltaTime: ${deltaTime.toFixed(2)}ms, FPS: ${(1000/deltaTime).toFixed(1)}`, 'color: gray');
@@ -1980,10 +1993,10 @@ const GOLSurvival = () => {
           console.error("Initialization failed, animation loop not started.");
       }
 
-      // Debounced re-init when the canvas's container resizes. window.resize is
-      // unreliable inside embedded preview panes; ResizeObserver tracks the actual
-      // container element, which always fires. Debounce keeps dragging the window
-      // edge from triggering a flood of inits that destroy the network.
+      // Debounced re-init when the canvas's container resizes. Inside embedded
+      // preview / IDE panes, neither window.resize nor ResizeObserver fires
+      // reliably when the surrounding host pane is dragged. We use both plus a
+      // periodic poll inside the render loop (see resizePollRef) — belt + suspenders.
       let resizeTimeout = null;
       let lastInitW = 0;
       let lastInitH = 0;
@@ -2007,6 +2020,21 @@ const GOLSurvival = () => {
               resizeTimeout = null;
               handleResize();
           }, 220);
+      };
+      // Expose to the render loop so it can poll for size changes that the
+      // event listeners might miss inside embedded preview panes.
+      resizePollRef.current = () => {
+          const p = canvasRef.current?.parentElement;
+          if (!p) return;
+          const w = p.clientWidth;
+          const h = p.clientHeight;
+          if (lastInitW === 0) { lastInitW = w; lastInitH = h; return; }
+          if (Math.abs(w - lastInitW) >= cellSizeRef.current ||
+              Math.abs(h - lastInitH) >= cellSizeRef.current) {
+              lastInitW = w;
+              lastInitH = h;
+              scheduleResize();
+          }
       };
 
       const parent = canvasRef.current?.parentElement;
@@ -2058,6 +2086,7 @@ const GOLSurvival = () => {
           if (resizeTimeout) clearTimeout(resizeTimeout);
           if (resizeObserver) resizeObserver.disconnect();
           window.removeEventListener('resize', scheduleResize);
+          resizePollRef.current = null;
           window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
           sourcesRef.current = [];
