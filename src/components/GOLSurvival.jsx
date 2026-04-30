@@ -1980,23 +1980,60 @@ const GOLSurvival = () => {
           console.error("Initialization failed, animation loop not started.");
       }
 
-      // Resize handler
+      // Debounced re-init when the canvas's container resizes. window.resize is
+      // unreliable inside embedded preview panes; ResizeObserver tracks the actual
+      // container element, which always fires. Debounce keeps dragging the window
+      // edge from triggering a flood of inits that destroy the network.
+      let resizeTimeout = null;
+      let lastInitW = 0;
+      let lastInitH = 0;
       const handleResize = () => {
           console.log("Resizing detected...");
           if (animationFrameIdRef.current) {
               window.cancelAnimationFrame(animationFrameIdRef.current);
-              animationFrameIdRef.current = null; // Clear the ref
+              animationFrameIdRef.current = null;
           }
           if (initializeSimulation()) {
               console.log("Restarting animation loop after resize.");
-               setTimeout(() => emitSignal(), 50);
+              setTimeout(() => emitSignal(), 50);
               animationFrameIdRef.current = window.requestAnimationFrame(render);
           } else {
               console.error("Re-initialization after resize failed.");
           }
       };
+      const scheduleResize = () => {
+          if (resizeTimeout) clearTimeout(resizeTimeout);
+          resizeTimeout = setTimeout(() => {
+              resizeTimeout = null;
+              handleResize();
+          }, 220);
+      };
 
-      window.addEventListener('resize', handleResize);
+      const parent = canvasRef.current?.parentElement;
+      let resizeObserver = null;
+      if (parent && typeof ResizeObserver !== 'undefined') {
+          resizeObserver = new ResizeObserver((entries) => {
+              const entry = entries[0];
+              if (!entry) return;
+              const { width, height } = entry.contentRect;
+              // Skip no-op observations and require at least 1 cell of change so
+              // pixel-rounding jitter doesn't repeatedly nudge an init.
+              if (Math.abs(width - lastInitW) < cellSizeRef.current
+                  && Math.abs(height - lastInitH) < cellSizeRef.current) {
+                  return;
+              }
+              lastInitW = width;
+              lastInitH = height;
+              scheduleResize();
+          });
+          resizeObserver.observe(parent);
+          // Seed the baseline so the first observation (which fires immediately) is a no-op.
+          lastInitW = parent.clientWidth;
+          lastInitH = parent.clientHeight;
+      } else {
+          // Fallback for environments without ResizeObserver.
+          window.addEventListener('resize', scheduleResize);
+      }
 
       // Re-initialize when cellSize changes — the grid + canvas dims must rebuild.
       // Skipping the very first run avoids double-init on mount.
@@ -2018,7 +2055,9 @@ const GOLSurvival = () => {
           if (animationFrameIdRef.current) {
               window.cancelAnimationFrame(animationFrameIdRef.current);
           }
-          window.removeEventListener('resize', handleResize);
+          if (resizeTimeout) clearTimeout(resizeTimeout);
+          if (resizeObserver) resizeObserver.disconnect();
+          window.removeEventListener('resize', scheduleResize);
           window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
           sourcesRef.current = [];
