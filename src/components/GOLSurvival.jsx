@@ -2022,15 +2022,20 @@ const GOLSurvival = () => {
           }, 220);
       };
       // Expose to the render loop so it can poll for size changes that the
-      // event listeners might miss inside embedded preview panes.
+      // event listeners might miss inside embedded preview panes. Compares
+      // parent.clientWidth directly against the dimensions the simulation was
+      // last initialized with (gridDims × cellSize) — no closure-state baseline
+      // that could drift out of sync if init reads a transient parent size.
       resizePollRef.current = () => {
           const p = canvasRef.current?.parentElement;
-          if (!p) return;
+          if (!p || !gridDimensions.current) return;
           const w = p.clientWidth;
           const h = p.clientHeight;
-          if (lastInitW === 0) { lastInitW = w; lastInitH = h; return; }
-          if (Math.abs(w - lastInitW) >= cellSizeRef.current ||
-              Math.abs(h - lastInitH) >= cellSizeRef.current) {
+          const cs = cellSizeRef.current || 1;
+          const expectedW = gridDimensions.current.width * cs;
+          const expectedH = gridDimensions.current.height * cs;
+          // Hysteresis of 2 cells in either direction to avoid jitter.
+          if (Math.abs(w - expectedW) >= cs * 2 || Math.abs(h - expectedH) >= cs * 2) {
               lastInitW = w;
               lastInitH = h;
               scheduleResize();
@@ -2042,22 +2047,20 @@ const GOLSurvival = () => {
       if (parent && typeof ResizeObserver !== 'undefined') {
           resizeObserver = new ResizeObserver((entries) => {
               const entry = entries[0];
-              if (!entry) return;
+              if (!entry || !gridDimensions.current) return;
               const { width, height } = entry.contentRect;
-              // Skip no-op observations and require at least 1 cell of change so
-              // pixel-rounding jitter doesn't repeatedly nudge an init.
-              if (Math.abs(width - lastInitW) < cellSizeRef.current
-                  && Math.abs(height - lastInitH) < cellSizeRef.current) {
+              const cs = cellSizeRef.current || 1;
+              const expectedW = gridDimensions.current.width * cs;
+              const expectedH = gridDimensions.current.height * cs;
+              // Compare against the dims the simulation was last initialized with,
+              // not a closure baseline that could be out of sync.
+              if (Math.abs(width - expectedW) < cs * 2
+                  && Math.abs(height - expectedH) < cs * 2) {
                   return;
               }
-              lastInitW = width;
-              lastInitH = height;
               scheduleResize();
           });
           resizeObserver.observe(parent);
-          // Seed the baseline so the first observation (which fires immediately) is a no-op.
-          lastInitW = parent.clientWidth;
-          lastInitH = parent.clientHeight;
       } else {
           // Fallback for environments without ResizeObserver.
           window.addEventListener('resize', scheduleResize);
