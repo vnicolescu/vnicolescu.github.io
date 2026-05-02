@@ -1926,6 +1926,16 @@ const GOLSurvival = () => {
            }
           const { clientWidth, clientHeight } = parentElement;
 
+          // Refuse to init when parent has no real layout (tab/pane just closed,
+          // hidden, or mid-transition). Mutating gridDimensions to zeros here
+          // would lock the sim in a broken state that polling can recover from
+          // but only after extra round-trips. Better to bail and let the next
+          // poll catch the real dims.
+          if (clientWidth < 50 || clientHeight < 50) {
+              console.warn(`[init] parent too small (${clientWidth}x${clientHeight}) — deferring init`);
+              return false;
+          }
+
           // Set up canvas with correct dimensions
           const dpr = window.devicePixelRatio || 1;
           canvas.width = clientWidth * dpr;
@@ -2044,6 +2054,17 @@ const GOLSurvival = () => {
       // Also expose for the render loop (belt + suspenders).
       resizePollRef.current = resizePollFn;
 
+      // When the tab/pane becomes visible again, layout often differs from
+      // before. Force a poll immediately so we don't have to wait up to 400ms
+      // for the interval — and so an init that bailed earlier (e.g. while
+      // hidden with parent.clientWidth=0) gets retried right away.
+      const handleVisibility = () => {
+          if (document.visibilityState === 'visible') {
+              resizePollFn();
+          }
+      };
+      document.addEventListener('visibilitychange', handleVisibility);
+
       const parent = canvasRef.current?.parentElement;
       let resizeObserver = null;
       if (parent && typeof ResizeObserver !== 'undefined') {
@@ -2092,6 +2113,7 @@ const GOLSurvival = () => {
           if (resizeInterval) clearInterval(resizeInterval);
           if (resizeObserver) resizeObserver.disconnect();
           window.removeEventListener('resize', scheduleResize);
+          document.removeEventListener('visibilitychange', handleVisibility);
           resizePollRef.current = null;
           window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
