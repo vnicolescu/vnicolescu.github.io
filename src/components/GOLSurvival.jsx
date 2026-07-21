@@ -154,6 +154,11 @@ const GOLSurvival = () => {
   const cellSizeRef = useRef(BASE_CELL_SIZE);
   const showGridRef = useRef(true);
 
+  // Polling fallback for resize detection — set inside the mount useEffect,
+  // called every ~half-second from the render loop. Catches resizes when
+  // window.resize and ResizeObserver both fail to fire (some preview panes).
+  const resizePollRef = useRef(null);
+
   // --- Bloom lifecycle refs ---
   const phaseRef = useRef('normal'); // 'normal' | 'retracting' | 'blooming' | 'sporulating'
   const phaseStartFrameRef = useRef(0);
@@ -1744,6 +1749,14 @@ const GOLSurvival = () => {
            // Update frame counter
            frameCountRef.current++;
 
+           // Resize poll — every ~30 frames, ask the mount-effect helper to check
+           // whether the parent's clientWidth/Height has drifted from the last init
+           // dims. Bullet-proof fallback for environments where window.resize and
+           // ResizeObserver both miss.
+           if (frameCountRef.current % 30 === 0 && resizePollRef.current) {
+               resizePollRef.current();
+           }
+
            // Performance logging
            if(frameCountRef.current % 300 === 0) {
                console.log(`%cFrame: ${frameCountRef.current} - DeltaTime: ${deltaTime.toFixed(2)}ms, FPS: ${(1000/deltaTime).toFixed(1)}`, 'color: gray');
@@ -1913,6 +1926,16 @@ const GOLSurvival = () => {
            }
           const { clientWidth, clientHeight } = parentElement;
 
+          // Refuse to init when parent has no real layout (tab/pane just closed,
+          // hidden, or mid-transition). Mutating gridDimensions to zeros here
+          // would lock the sim in a broken state that polling can recover from
+          // but only after extra round-trips. Better to bail and let the next
+          // poll catch the real dims.
+          if (clientWidth < 50 || clientHeight < 50) {
+              console.warn(`[init] parent too small (${clientWidth}x${clientHeight}) — deferring init`);
+              return false;
+          }
+
           // Set up canvas with correct dimensions
           const dpr = window.devicePixelRatio || 1;
           canvas.width = clientWidth * dpr;
@@ -1980,23 +2003,91 @@ const GOLSurvival = () => {
           console.error("Initialization failed, animation loop not started.");
       }
 
-      // Resize handler
+      // Debounced re-init when the canvas's container resizes. Inside embedded
+      // preview / IDE panes, neither window.resize nor ResizeObserver fires
+      // reliably when the surrounding host pane is dragged. We use both plus a
+      // periodic poll inside the render loop (see resizePollRef) — belt + suspenders.
+      let resizeTimeout = null;
+      let lastInitW = 0;
+      let lastInitH = 0;
       const handleResize = () => {
           console.log("Resizing detected...");
           if (animationFrameIdRef.current) {
               window.cancelAnimationFrame(animationFrameIdRef.current);
-              animationFrameIdRef.current = null; // Clear the ref
+              animationFrameIdRef.current = null;
           }
           if (initializeSimulation()) {
               console.log("Restarting animation loop after resize.");
-               setTimeout(() => emitSignal(), 50);
+              setTimeout(() => emitSignal(), 50);
               animationFrameIdRef.current = window.requestAnimationFrame(render);
           } else {
               console.error("Re-initialization after resize failed.");
           }
       };
+      const scheduleResize = () => {
+          if (resizeTimeout) clearTimeout(resizeTimeout);
+          resizeTimeout = setTimeout(() => {
+              resizeTimeout = null;
+              handleResize();
+          }, 220);
+      };
+      // setInterval-based resize check — runs independently of the animation
+      // loop. If the render loop dies (HMR, error recovery, anything) the
+      // interval keeps polling, so resize detection cannot fail along with
+      // rendering. Compares parent.clientWidth to the actual init dims.
+      const resizePollFn = () => {
+          const p = canvasRef.current?.parentElement;
+          if (!p || !gridDimensions.current) return;
+          const w = p.clientWidth;
+          const h = p.clientHeight;
+          const cs = cellSizeRef.current || 1;
+          const expectedW = gridDimensions.current.width * cs;
+          const expectedH = gridDimensions.current.height * cs;
+          if (Math.abs(w - expectedW) >= cs * 2 || Math.abs(h - expectedH) >= cs * 2) {
+              console.log(`%c[resize-poll] mismatch: parent=${w}x${h}, expected=${expectedW}x${expectedH} — scheduling re-init`, 'color: yellow; font-weight: bold');
+              lastInitW = w;
+              lastInitH = h;
+              scheduleResize();
+          }
+      };
+      const resizeInterval = setInterval(resizePollFn, 400);
+      // Also expose for the render loop (belt + suspenders).
+      resizePollRef.current = resizePollFn;
 
-      window.addEventListener('resize', handleResize);
+      // When the tab/pane becomes visible again, layout often differs from
+      // before. Force a poll immediately so we don't have to wait up to 400ms
+      // for the interval — and so an init that bailed earlier (e.g. while
+      // hidden with parent.clientWidth=0) gets retried right away.
+      const handleVisibility = () => {
+          if (document.visibilityState === 'visible') {
+              resizePollFn();
+          }
+      };
+      document.addEventListener('visibilitychange', handleVisibility);
+
+      const parent = canvasRef.current?.parentElement;
+      let resizeObserver = null;
+      if (parent && typeof ResizeObserver !== 'undefined') {
+          resizeObserver = new ResizeObserver((entries) => {
+              const entry = entries[0];
+              if (!entry || !gridDimensions.current) return;
+              const { width, height } = entry.contentRect;
+              const cs = cellSizeRef.current || 1;
+              const expectedW = gridDimensions.current.width * cs;
+              const expectedH = gridDimensions.current.height * cs;
+              // Compare against the dims the simulation was last initialized with,
+              // not a closure baseline that could be out of sync.
+              if (Math.abs(width - expectedW) < cs * 2
+                  && Math.abs(height - expectedH) < cs * 2) {
+                  return;
+              }
+              scheduleResize();
+          });
+          resizeObserver.observe(parent);
+      } else {
+          // Fallback for environments without ResizeObserver.
+          window.addEventListener('resize', scheduleResize);
+      }
 
       // Re-initialize when cellSize changes — the grid + canvas dims must rebuild.
       // Skipping the very first run avoids double-init on mount.
@@ -2018,7 +2109,12 @@ const GOLSurvival = () => {
           if (animationFrameIdRef.current) {
               window.cancelAnimationFrame(animationFrameIdRef.current);
           }
-          window.removeEventListener('resize', handleResize);
+          if (resizeTimeout) clearTimeout(resizeTimeout);
+          if (resizeInterval) clearInterval(resizeInterval);
+          if (resizeObserver) resizeObserver.disconnect();
+          window.removeEventListener('resize', scheduleResize);
+          document.removeEventListener('visibilitychange', handleVisibility);
+          resizePollRef.current = null;
           window.removeEventListener('keydown', handleKey);
           tendrilsRef.current.clear();
           sourcesRef.current = [];
